@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+rich
+httpx
