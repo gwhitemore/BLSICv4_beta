@@ -6,6 +6,8 @@ I have also decided to make the console opensource, and will remain opensource. 
 
 There will be a known limitation for the view of the number of miners within the console. As of Apr 19th 2026 I have 7 miners and built the interface with this smaller number in mind.. You can adjust the font and view size within the terminal settings to assist to fit more in. I will be working on a page view to allow for a better interface for tables and view for higher number of miners.  
 
+If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy]bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy
+
 ## ✨ Key Features
 
 ### 🖥️ Core Console (Python Terminal)
