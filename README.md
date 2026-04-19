@@ -8,6 +8,9 @@ There will be a known limitation for the view of the number of miners within the
 
 If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy
 
+<img width="1913" height="937" alt="Screenshot from 2026-04-19 19-54-29" src="https://github.com/user-attachments/assets/8d10040f-df1c-4246-970e-c1514c8fc34c" />
+
+
 ## ✨ Key Features
 
 ### 🖥️ Core Console (Python Terminal)
