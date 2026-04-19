@@ -107,7 +107,7 @@ The BLSIC terminal is fully keyboard-driven. Ensure your terminal window is acti
 * **`H` (Hunt):** Forces a manual network scan to discover newly connected ASICs.
 * **`I` (IP Privacy):** Toggles the hardware matrix to hide the first two octets of your local IP addresses.
 * **`S` (Settings):** Opens the prompt to set your local Electricity Cost (£/kWh) and Peak Sun Hours for the solar calculator.
-* **`C` (Cost & Tags):** Allows you to input the exact purchase price of each miner to calculate your Swarm Efficiency (£/TH), and manually assign hardware board versions (e.g., v6.1, 5.1). A nifty feature to identify board versions not in the api, and align limits on Watts / Amps etc as a result. "Currently only on NerdQAxe devices for tagging" cost works for all. 
+* **`C` (Cost & Tags):** Allows you to input the exact purchase price of each miner to calculate your Swarm Efficiency (£/TH), and manually assign hardware board versions (e.g., v6.1, 5.1). A nifty feature to identify board versions not in the api, and align limits on Watts / Amps etc as a result. "Currently only on NerdQAxe devices for identifying the tagging" cost works for all. 
 * **`P` (Power Mode):** Toggles the dashboard into Solar/Off-Grid mode.
 * **`A` (Action Terminal):** Opens the remote command center to send targeted HTTP reboot signals to specific rigs.
 * **`R` (Reset Views):** Visually recalibrates the trend charts and clears the session peak hashrate. *(Note: This does not delete lifetime data or luck metrics).*
@@ -128,12 +128,13 @@ The console's `SwarmHunter` engine uses a combination of Hostnames, Device Model
 * **NerdMiner / Micro-Scouts** (ESP32 CPU miners) - *Yellow* -- This may not work as in test, and caused some challenges with their api discovery. Might drop anyway as not really worth the hashrate.. ;-) 
 
 **What happens if I connect an unsupported miner?**
-If you connect an ASIC that the console does not recognize, the intelligence engine will attempt to look at its hashrate and board version. If it cannot definitively identify the hardware, it will safely default to classifying it as a generic **"Bitaxe"**. >>> is the current logic.. As i have limited Bitaxe HW to date I can add more with community sort, plus I have an API discovery tool.
+If you connect an ASIC that the console does not recognize, the intelligence engine will attempt to look at its hashrate and board version. If it cannot definitively identify the hardware, it will safely default to classifying it as a generic **"Bitaxe"**. >>> is the current logic.. As i have limited Bitaxe HW to date I can add more with community support, plus I have an API discovery tool.
 
 ### 🧪 Notes for Testers:
-If you encounter a device that is misclassified or showing "Unknown", please note the `deviceModel` and `boardVersion` listed in its local web UI. We are actively expanding the detection matrix!
+If you encounter a device that is misclassified or showing "Unknown", please note the `deviceModel` and `boardVersion` listed in its local web UI. Looking forward to expanding the detection matrix!
 
 COMING SOON>> testing and sorting out getting published on the playstore. 
+
 ## 📱 Android Companion App (Feature Deep Dive)
 The BLSIC Android app acts as a tactical glass display, bringing enterprise-grade monitoring and immersive UI feedback directly to your mobile device.
 
