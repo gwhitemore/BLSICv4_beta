@@ -8,8 +8,7 @@ There will be a known limitation for the view of the number of miners within the
 
 If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy
 
-<img width="1913" height="937" alt="Screenshot from 2026-04-19 19-54-29" src="https://github.com/user-attachments/assets/8d10040f-df1c-4246-970e-c1514c8fc34c" />
-
+<img width="1287" height="762" alt="image" src="https://github.com/user-attachments/assets/b8cb0687-49ec-41bf-a140-164c752cef61" />
 
 ## ✨ Key Features
 
@@ -102,6 +101,9 @@ Because this repository does not include a `swarm_config.json` file, the console
 2. **Auto-Discovery Hunt:** The console will automatically scan your local `192.168.1.x` subnet to hunt for active ASIC miners. If auto hunt doesn't start just press 'H' to kick off the hunter.. 
 3. **Data Vault Creation:** Once the scan finishes, it will generate a brand new `swarm_config.json` file in the root folder. This file permanently stores your fleet telemetry, lifetime shares, and custom settings. 
 4. **API Bridge:** When you launch `main_ui.py`, the system simultaneously spins up a FastAPI server on `http://0.0.0.0:8000` in the background.
+
+<img width="1230" height="669" alt="image" src="https://github.com/user-attachments/assets/2d7a8ff7-da59-42ac-94d2-b99a53efa609" />
+
 
 ---
 
