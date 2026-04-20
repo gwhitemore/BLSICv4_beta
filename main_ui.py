@@ -10,6 +10,7 @@ import httpx
 from pathlib import Path
 from datetime import datetime
 from collections import deque
+from data import fetch_ambient_weather
 
 # --- CROSS-PLATFORM SYSTEM IMPORTS ---
 try:
@@ -46,6 +47,10 @@ TYPE_COLORS = {
     "NerdMiner": "bright_yellow",
     "Micro": "bright_yellow"
 }
+
+# --- V4.1 UI ANIMATION STATE ---
+marquee_offset = 0
+anomaly_offset = 0
 
 # --- GLOBAL CONFIGURATION ---
 UK_VOLTAGE = 230  
@@ -256,10 +261,16 @@ async def handle_miner_action():
 def make_layout():
     layout = Layout()
     layout.split_column(
-        Layout(name="header", size=3),
+        Layout(name="header", size=4),
         Layout(name="body"),
         Layout(name="footer", size=3)
     )
+    
+    layout["header"].split_row(
+        Layout(name="header_static", size=54), # Fixed width for the logo
+        Layout(name="header_marquee", ratio=1) # Fills the rest of the screen
+    )
+    
     layout["body"].split_row(
         Layout(name="left_col", ratio=10),
         Layout(name="right_col", ratio=3)
@@ -421,8 +432,8 @@ def hardware_table():
 
     table = Table(box=box.SIMPLE_HEAD, expand=True, header_style="bold cyan")
     table.add_column("#", width=2, no_wrap=True)
-    table.add_column("TYPE", width=16, no_wrap=True) # <-- WIDENED TO FIT BOARD VERSIONS
-    table.add_column("TAG", justify="center", no_wrap=True) # <-- WIDTH REMOVED FOR IP
+    table.add_column("TYPE", width=16, no_wrap=True) 
+    table.add_column("TAG", justify="center", no_wrap=True) 
     table.add_column("COIN", width=5, justify="center", no_wrap=True)
     table.add_column("POOL", width=5, no_wrap=True, overflow="ellipsis")
     table.add_column("SESS DIFF", justify="right", no_wrap=True)
@@ -436,8 +447,8 @@ def hardware_table():
     table.add_column("UPTIME", justify="right", width=9, no_wrap=True)
     
     micro_table = Table(box=box.SIMPLE_HEAD, expand=True, header_style="bold yellow")
-    micro_table.add_column("TYPE", width=16, no_wrap=True) # WIDENED
-    micro_table.add_column("TAG", justify="center", no_wrap=True) # <-- WIDTH REMOVED FOR IP
+    micro_table.add_column("TYPE", width=16, no_wrap=True) 
+    micro_table.add_column("TAG", justify="center", no_wrap=True) 
     micro_table.add_column("COIN", width=6, justify="center", no_wrap=True)
     micro_table.add_column("POOL", width=10, no_wrap=True, overflow="ellipsis")
     micro_table.add_column("BEST DIFF", justify="right", no_wrap=True)
@@ -450,7 +461,18 @@ def hardware_table():
     asset_counts = {}
     has_micros = False
     
-    for i, (ip, m) in enumerate(swarm_state["miners"].items(), 1):
+    # --- NEW: Master Pagination Setup ---
+    sorted_all_ips = sorted(list(swarm_state["miners"].keys()))
+    main_ips = [ip for ip in sorted_all_ips if not swarm_state["miners"][ip].get('is_micro')]
+    
+    page_size = swarm_state.get("page_size", 7)
+    current_page = swarm_state.get("page_current", 0)
+    start_idx = current_page * page_size
+    end_idx = start_idx + page_size
+    page_ips_set = set(main_ips[start_idx:end_idx])
+    
+    for ip in sorted_all_ips:
+        m = swarm_state["miners"][ip]
         online = m.get('online', False)
         style = "white" if online else "dim grey37"
         is_micro = m.get('is_micro', False)
@@ -458,28 +480,19 @@ def hardware_table():
         asic_count = int(m.get('asicCount', 1))
         tag = m.get('tag', '---')
         
-        # ==========================================================
-        # --- NEW: Build the Tag Cell Content (Last 2 Octets Only) ---
-        # ==========================================================
         show_ips = swarm_state.get("show_ips", False)
-        
         if show_ips and ip.count('.') == 3:
-            # Slice off the first two octets (e.g., "192.168.1.107" -> "1.107")
             short_ip = ".".join(ip.split('.')[-2:])
             tag_display = f"[{style}]{tag}[/]\n[dim]{short_ip}[/]"
         else:
             tag_display = f"[{style}]{tag}[/]"
-        # ==========================================================
-        
+            
         if online:
+            # Global stats aggregate regardless of page visibility!
             total_chips += asic_count
             if not is_micro: asset_counts[m_type] = asset_counts.get(m_type, 0) + 1
             
         type_color = TYPE_COLORS.get(m_type, "white")
-        
-        # ==========================================================
-        # --- THE FIX: Parse & Append Board Version ---
-        # ==========================================================
         raw_hw = str(m.get('manual_hw_version', m.get('hardwareRevision', m.get('boardVersion', '')))).strip()
         clean_hw = raw_hw
         if clean_hw.lower().startswith('v'): clean_hw = clean_hw[1:]
@@ -489,7 +502,6 @@ def hardware_table():
             display_type = f"[{type_color}]{m_type}[/] [dim]v{clean_hw}[/]" 
         else:
             display_type = f"[{type_color}]{m_type}[/]" 
-        # ==========================================================
             
         c_type = m.get('coin_type', 'BTC')
         coin_tag = "[bold cyan]BCH[/]" if c_type == "BCH" else "[bold orange3]BTC[/]"
@@ -508,51 +520,56 @@ def hardware_table():
             if core_t >= 80: temp_str = f"[bold blink red]{core_t:.0f}°C[/]"
             elif core_t >= 70: temp_str = f"[bold yellow]{core_t:.0f}°C[/]"
 
+            session_best = float(m.get('bestSessionDiff', 0.0))
+            # Track the session best globally for the flash timer!
+            if session_best > current_best_found: current_best_found = session_best
+
             if is_micro:
                 has_micros = True
                 hr_str = f"[bold cyan]{raw_hr/1_000_000:.2f} MH/s[/]" if raw_hr > 1_000_000 else f"[bold cyan]{raw_hr/1000:.1f} KH/s[/]"
                 best_diff_str = luck_engine.format_diff_scaled(global_best) if global_best > 0 else "[dim]--[/]"
                 micro_table.add_row(display_type, tag_display, coin_tag, pool[:10], best_diff_str, hr_str, temp_str, format_uptime(m.get('uptimeSeconds', 0)))
             else:
-                if raw_hr > 1_000_000_000_000:       th = raw_hr / 1_000_000_000_000.0
-                elif raw_hr > 100_000.0:             th = raw_hr / 1_000_000.0
-                elif raw_hr > 50.0:                  th = raw_hr / 1000.0
-                else:                                th = raw_hr
-                
-                eff_jth = (power / th) if th > 0 else 0
-                vr_temp = float(m.get('vrTemp', m.get('tempVrm', 0.0)))
-                freq = int(m.get('frequency', m.get('coreFreq', 0)))
-                volt = int(m.get('coreVoltage', m.get('voltage', 0)))
-                session_best = float(m.get('bestSessionDiff', 0.0))
-                
-                sess_diff_str = luck_engine.format_diff_scaled(session_best) if session_best > 0 else "[dim]--[/]"
-                best_diff_str = luck_engine.format_diff_scaled(global_best) if global_best > 0 else "[dim]--[/]"
-                
-                if vr_temp > 0: temp_str += f" [dim]{vr_temp:.0f}°[/]"
-                core_str = f"{freq}[dim]@[/]{volt}" if freq > 0 else "[dim]--[/]"
-                
-                try: rssi = int(float(m.get('wifiRSSI', m.get('rssi', 0))))
-                except: rssi = 0
-                if rssi == 0: rssi_str = "[dim]--[/]"
-                elif rssi >= -60: rssi_str = f"[bold green]{rssi}[/]"   
-                elif rssi >= -75: rssi_str = f"[bold yellow]{rssi}[/]"  
-                else: rssi_str = f"[bold red]{rssi}[/]"                 
-                
-                # --- THE FIX: Track the Session Best for the Gamification Engine ---
-                if session_best > current_best_found: current_best_found = session_best
-                
-                table.add_row(
-                    str(i), display_type, tag_display, 
-                    coin_tag, pool[:10], sess_diff_str, best_diff_str, 
-                    f"[bold white]{th:.2f}[/]", f"{power:.1f}W", f"{eff_jth:.1f}", 
-                    temp_str, core_str, rssi_str, format_uptime(m.get('uptimeSeconds', 0))
-                )
+                # ONLY draw the row if the miner belongs on the current page slice
+                if ip in page_ips_set:
+                    i = main_ips.index(ip) + 1
+                    if raw_hr > 1_000_000_000_000:       th = raw_hr / 1_000_000_000_000.0
+                    elif raw_hr > 100_000.0:             th = raw_hr / 1_000_000.0
+                    elif raw_hr > 50.0:                  th = raw_hr / 1000.0
+                    else:                                th = raw_hr
+                    
+                    eff_jth = (power / th) if th > 0 else 0
+                    vr_temp = float(m.get('vrTemp', m.get('tempVrm', 0.0)))
+                    freq = int(m.get('frequency', m.get('coreFreq', 0)))
+                    volt = int(m.get('coreVoltage', m.get('voltage', 0)))
+                    
+                    sess_diff_str = luck_engine.format_diff_scaled(session_best) if session_best > 0 else "[dim]--[/]"
+                    best_diff_str = luck_engine.format_diff_scaled(global_best) if global_best > 0 else "[dim]--[/]"
+                    
+                    if vr_temp > 0: temp_str += f" [dim]{vr_temp:.0f}°[/]"
+                    core_str = f"{freq}[dim]@[/]{volt}" if freq > 0 else "[dim]--[/]"
+                    
+                    try: rssi = int(float(m.get('wifiRSSI', m.get('rssi', 0))))
+                    except: rssi = 0
+                    if rssi == 0: rssi_str = "[dim]--[/]"
+                    elif rssi >= -60: rssi_str = f"[bold green]{rssi}[/]"   
+                    elif rssi >= -75: rssi_str = f"[bold yellow]{rssi}[/]"  
+                    else: rssi_str = f"[bold red]{rssi}[/]"                 
+                    
+                    table.add_row(
+                        str(i), display_type, tag_display, 
+                        coin_tag, pool[:10], sess_diff_str, best_diff_str, 
+                        f"[bold white]{th:.2f}[/]", f"{power:.1f}W", f"{eff_jth:.1f}", 
+                        temp_str, core_str, rssi_str, format_uptime(m.get('uptimeSeconds', 0))
+                    )
         else:
             if is_micro:
                 has_micros = True
                 micro_table.add_row(f"[dim]{display_type}[/]", tag_display, coin_tag, "[dim]----[/]", "[dim]--[/]", "[dim]--[/]", "-", "[bold red]OFFLINE[/]")
             else:
-                table.add_row(str(i), f"[dim]{display_type}[/]", tag_display, coin_tag, "[dim]----[/]", "[dim]--[/]", "[dim]--[/]", "[dim]----[/]", "[bold red]OFF[/]", "-", "-", "[dim]--[/]", "[bold red]OFFLINE[/]")
+                if ip in page_ips_set:
+                    i = main_ips.index(ip) + 1
+                    table.add_row(str(i), f"[dim]{display_type}[/]", tag_display, coin_tag, "[dim]----[/]", "[dim]--[/]", "[dim]--[/]", "[dim]----[/]", "[bold red]OFF[/]", "-", "-", "[dim]--[/]", "[bold red]OFFLINE[/]")
             
     if current_best_found > swarm_state["last_best_share"]:
         swarm_state["last_best_share"] = current_best_found
@@ -589,7 +606,12 @@ def hardware_table():
 
     wrapper.add_row(Align.center(f"\n[bold dim white]ASIC SWARM ASSETS[/]\n{legend_text}\n\n{mapping_str}\n{shares_str}"))
 
-    return Panel(wrapper, title="[ FLEET TELEMETRY - HARDWARE MATRIX ]", border_style="blue")
+    # --- NEW: Dynamic Title Bar ---
+    total_pages = max(1, math.ceil(len(main_ips) / page_size))
+    page_str = f"PAGE {current_page + 1}/{total_pages}"
+    auto_str = "(AUTO)" if swarm_state.get("page_auto", True) else "(MANUAL)"
+    
+    return Panel(wrapper, title=f"[ FLEET TELEMETRY - HARDWARE MATRIX ] [cyan]{page_str} {auto_str}[/]", border_style="blue")
 
 def solar_saver_panel():
     total_w = swarm_state.get('total_power', 0)
@@ -734,17 +756,27 @@ def luck_ladder_panel():
     table.add_column("COIN", width=4, no_wrap=True) 
     table.add_column("REL%", justify="right", no_wrap=True) 
     table.add_column("LUCK", justify="right", no_wrap=True) 
-    # CRITICAL FIX: Change to INF (LOG)
     table.add_column("INF (LOG)", justify="right", no_wrap=True)     
     table.add_column("VIRAL LOAD", justify="left", width=15, no_wrap=True)
-    table.add_column("STAGE", justify="left", width=11, no_wrap=True)      # <-- Mutation Labels
+    table.add_column("STAGE", justify="left", width=11, no_wrap=True)
     table.add_column("RND BEST", justify="right", width=9, no_wrap=True)
 
+    # 1. Grab ALL active miners for global stats calculation
     active_miners = [m for m in swarm_state["miners"].values() if m.get('online') and not m.get('is_micro')]
     active_miners.sort(key=lambda x: float(x.get('v4_hot_score', 0)), reverse=True)
 
-    bch_fleet = [m for m in active_miners if m.get('coin_type') == 'BCH']
-    btc_fleet = [m for m in active_miners if m.get('coin_type') == 'BTC']
+    # --- NEW: Slicer Logic ---
+    page_size = swarm_state.get("page_size", 7)
+    current_page = swarm_state.get("page_current", 0)
+    start_idx = current_page * page_size
+    end_idx = start_idx + page_size
+    
+    # 2. Slice the fleet JUST for drawing the table rows
+    paged_miners = active_miners[start_idx:end_idx]
+
+    # 3. Split ONLY the paged miners into their respective coin categories
+    bch_fleet = [m for m in paged_miners if m.get('coin_type') == 'BCH']
+    btc_fleet = [m for m in paged_miners if m.get('coin_type') == 'BTC']
 
     def render_fleet_rows(fleet):
         for m in fleet:
@@ -759,16 +791,11 @@ def luck_ladder_panel():
             inf = float(m.get('v4_inf', 0.0))
             blocks = int(m.get('blocks', 0))
             
-            # --- WIDER BAR CALCULATION (15 Blocks) ---
             bar_len = 15
             filled_blocks = int((inf / 100) * bar_len)
             if filled_blocks > bar_len: filled_blocks = bar_len
             
-            # ==========================================================
-            # --- MUTATION PATHWAY LOGIC ---
-            # ==========================================================
             if blocks > 0: 
-                # Block Found: Mutation 6 (Satoshi/BCH)
                 if c_type == "BCH":
                     status_text = "[bold green]BCH[/]"
                     inf_color = "green"
@@ -777,23 +804,18 @@ def luck_ladder_panel():
                     inf_color = "bright_magenta"
                 filled_blocks = bar_len
             elif inf >= 80: 
-                # Mutation 5: Epidemic (Face 5)
                 status_text = "[bold blink gold1]EPIDEMIC[/]"
                 inf_color = "gold1"
             elif inf >= 60: 
-                # Mutation 4: Virulent (Face 4)
                 status_text = "[bold yellow]VIRULENT[/]"
                 inf_color = "yellow"
             elif inf >= 40: 
-                # Mutation 3: Infectious (Face 3)
                 status_text = "[bold green]INFECTIOUS[/]"
                 inf_color = "green"
             elif inf >= 20: 
-                # Mutation 2: Sniffle (Face 2)
                 status_text = "[bold dim green]SNIFFLE[/]"
                 inf_color = "green"
             elif luck > 0: 
-                # Mutation 1: Immune (Face 1)
                 status_text = "[dim white]IMMUNE[/]"
                 inf_color = "white"
             else: 
@@ -816,8 +838,8 @@ def luck_ladder_panel():
                 rel_str,
                 luck_str,
                 inf_str,
-                bar_str,       # VIRAL LOAD
-                status_text,   # STAGE
+                bar_str,       
+                status_text,   
                 best_str
             )
             
@@ -826,7 +848,7 @@ def luck_ladder_panel():
         if bch_fleet: table.add_section() 
         render_fleet_rows(btc_fleet)
 
-    # --- AGGREGATE STATS ---
+    # --- AGGREGATE STATS (Still calculates across ALL active miners!) ---
     lt = swarm_state.get("swarm_lifetime_hits", {"b": 0, "s": 0, "m": 0, "g": 0, "t": 0, "blocks": 0})
     tot_b = lt.get('b', 0) + sum(m.get('b_hits', 0) for m in active_miners)
     tot_s = lt.get('s', 0) + sum(m.get('s_hits', 0) for m in active_miners)
@@ -858,10 +880,7 @@ def luck_ladder_panel():
     leg_grid.add_column(justify="left")
     leg_grid.add_row("[dim]• [/][bold green]REL%[/][dim]:  Reliability (0-100%). Perfect hw uptime since joining the current 72H cycle.[/]")
     leg_grid.add_row("[dim]• [/][bold cyan]LUCK[/][dim]:  Hash Velocity. Live TH/s vs Hardware Specs. 100 = Expected pace.[/]")
-    
-    # CRITICAL FIX: Change to INF (LOG)
     leg_grid.add_row("[dim]• [/][bold bright_magenta]INF (LOG)[/][dim]:  Infection (0-100%). Logarithmic proximity of the RND BEST share to a Block Solve (100).[/]")
-    
     leg_grid.add_row("[dim]• [/][bold yellow]STAGE[/][dim]: IMMUNE ➔ SNIFFLE ➔ INFECTIOUS ➔ VIRULENT ➔ EPIDEMIC ➔ BCH / SATOSHI[/]")
 	
     wrapper.add_row(Align.center(leg_grid))
@@ -874,7 +893,7 @@ def luck_ladder_panel():
     
     wrapper.add_row(Align.center(f"⏳ [bold dim white]CYCLE ENDS IN:[/] [bold cyan]{h}h {m}m[/]"))
 
-    # --- TOP PERFORMERS ---
+    # --- TOP PERFORMERS (Searches ALL active miners, not just the page!) ---
     hot_leader = None
     best_hot_pts = 0
     rel_leader = None
@@ -910,7 +929,13 @@ def luck_ladder_panel():
         
     wrapper.add_row(Align.center(prev_banner))
 
-    return Panel(wrapper, title="[ 72H SILICON RELIABILITY & LUCK LADDER - THE LUCK VIRUS ]", border_style="yellow")
+    # --- NEW: Dynamic Title Bar ---
+    total_main_miners = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
+    total_pages = max(1, math.ceil(total_main_miners / page_size))
+    page_str = f"PAGE {current_page + 1}/{total_pages}"
+    auto_str = "(AUTO)" if swarm_state.get("page_auto", True) else "(MANUAL)"
+
+    return Panel(wrapper, title=f"[ 72H SILICON RELIABILITY & LUCK LADDER ] [cyan]{page_str} {auto_str}[/]", border_style="yellow")
 
 def luck_archive_panel():
     archive = swarm_state.get("luck_archive", [])
@@ -991,42 +1016,52 @@ async def fetch_network_stats():
         
         await asyncio.sleep(600)
 
+def measure_ping(host, port, timeout=2.0):
+    # This runs in total isolation from the UI loop
+    import time, socket
+    try:
+        ip = socket.gethostbyname(host)
+        start = time.perf_counter()
+        with socket.create_connection((ip, port), timeout=timeout):
+            pass
+        
+        # THE FIX: Gigabit LAN is < 1ms. Prevent truncation to zero!
+        ping_ms = (time.perf_counter() - start) * 1000
+        return max(1, int(ping_ms)) 
+        
+    except Exception:
+        return 999
+
 async def track_network_latency():
+    loop = asyncio.get_running_loop()
     while swarm_state["run_loop"]:
-        try:
-            start = time.perf_counter()
-            reader, writer = await asyncio.wait_for(asyncio.open_connection('1.1.1.1', 53), timeout=2.0)
-            writer.close()
-            await writer.wait_closed()
-            swarm_state['ping_net'] = int((time.perf_counter() - start) * 1000)
-        except Exception:
-            swarm_state['ping_net'] = 999
+        # --- 1. ISOLATED NETWORK PING ---
+        net_ping = await loop.run_in_executor(None, measure_ping, '8.8.8.8', 53)
+        swarm_state['ping_net'] = net_ping if net_ping < 999 else 999
 
-        try:
-            active_pool_url = None
-            active_pool_port = 3333
-            for m in swarm_state["miners"].values():
-                if m.get('online') and m.get('stratumURL'):
-                    url = m.get('stratumURL', '').replace('stratum+tcp://', '').replace('stratum+ssl://', '')
-                    if url and "192.168" not in url and "127.0.0.1" not in url:
-                        parts = url.split(':')
-                        active_pool_url = parts[0]
-                        if len(parts) > 1: active_pool_port = int(parts[1])
-                        break
+        # --- 2. ISOLATED POOL PING ---
+        active_pool_url = None
+        active_pool_port = 3333
+        
+        for m in swarm_state["miners"].values():
+            if m.get('online') and m.get('stratumURL'):
+                url = m.get('stratumURL', '').replace('stratum+tcp://', '').replace('stratum+ssl://', '')
+                if url: 
+                    parts = url.split(':')
+                    active_pool_url = parts[0]
+                    if len(parts) > 1: 
+                        active_pool_port = int(parts[1])
+                    else:
+                        active_pool_port = int(m.get('stratumPort', 3333)) 
+                    break
+        
+        if active_pool_url:
+            pool_ping = await loop.run_in_executor(None, measure_ping, active_pool_url, active_pool_port)
+            swarm_state['ping_pool'] = pool_ping if pool_ping < 999 else 999
+        else:
+            swarm_state['ping_pool'] = 0 
             
-            if active_pool_url:
-                start = time.perf_counter()
-                reader, writer = await asyncio.wait_for(asyncio.open_connection(active_pool_url, active_pool_port), timeout=2.0)
-                writer.close()
-                await writer.wait_closed()
-                swarm_state['ping_pool'] = int((time.perf_counter() - start) * 1000)
-            else:
-                swarm_state['ping_pool'] = 0 
-        except Exception:
-            swarm_state['ping_pool'] = 999
-            
-        await asyncio.sleep(5) 
-
+        await asyncio.sleep(5)
 def ensure_fleet_tags():
     try:
         used_tags = [m.get('tag') for m in swarm_state["miners"].values() if m.get('tag') and m.get('tag') != '---']
@@ -1184,10 +1219,28 @@ async def handle_commands(hunter, live_handle):
                 # Data excellence is permanently preserved.
                 save_state()
                 
+				# ==========================================
+            # --- NEW: PAGINATION CONTROLS ADDED HERE ---
+            # ==========================================
+            elif cmd == 'm':
+                swarm_state["page_auto"] = not swarm_state.get("page_auto", True)
+                swarm_state["page_last_turn"] = time.time()
+                
+            elif cmd in [',', '<']:
+                swarm_state["page_auto"] = False # Engaging manual mode disables auto
+                swarm_state["page_current"] = max(0, swarm_state.get("page_current", 0) - 1)
+                
+            elif cmd in ['.', '>']:
+                swarm_state["page_auto"] = False
+                main_count = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
+                max_page = max(0, math.ceil(main_count / swarm_state.get("page_size", 7)) - 1)
+                swarm_state["page_current"] = min(max_page, swarm_state.get("page_current", 0) + 1)
+                		
         except asyncio.TimeoutError: 
             continue
 
 def swarm_intel_panel():
+    global anomaly_offset
     net_ping = swarm_state.get('ping_net', '--')
     pool_ping = swarm_state.get('ping_pool', '--')
 
@@ -1197,30 +1250,61 @@ def swarm_intel_panel():
     grid.add_column(ratio=1, no_wrap=True) 
     
     grid.add_row("[bold cyan]HASHRATE[/]", "[bold magenta]LATENCY[/]", "[bold orange3]LOAD[/]")
-    
     grid.add_row(
         f"BTC: {swarm_state.get('total_btc_th', 0):.2f} TH",
         f"Net:  {net_ping}ms",
         f"Draw: {swarm_state.get('total_amps', 0):.2f} A"
     )
-    
     grid.add_row(
         f"BCH: {swarm_state.get('total_bch_th', 0):.2f} TH",
         f"Pool: {pool_ping}ms",
         f"Total: {int(swarm_state.get('total_power', 0))} W"
     )
-    
     grid.add_row("", "", "")
-    
     grid.add_row("[bold green]OPEX[/]", "[bold dim white]SWARM PK[/]", "")
-    
     grid.add_row(
         f"Daily: £{swarm_state.get('total_opex_daily', 0):.2f}",
         f"{swarm_state.get('peak_th', 0):.2f} TH/s",
         ""
     )
-    
-    return Panel(grid, title="[ SYSTEM MONITOR ]", border_style="magenta")
+
+    # --- CONCEPT 3: ANOMALY DETECTION ENGINE ---
+    anomalies = []
+    for m in swarm_state.get("miners", {}).values():
+        if m.get('online') and not m.get('is_micro'):
+            # Trigger if ANY miner exceeds 75C
+            if float(m.get('temp', 0)) >= 75:
+                anomalies.append(f"TEMP ALERT: {m.get('tag')} ({m.get('temp')}°C)")
+            # Trigger if ANY miner drops in efficiency
+            if float(m.get('jth', 0)) > 28:
+                anomalies.append(f"EFFICIENCY ALERT: {m.get('tag')} ({m.get('jth'):.1f} J/TH)")
+
+    # THE FIX: Network latency alerts have been completely removed!
+
+    if anomalies:
+        alert_text = "   ///   ".join(anomalies) + "   ///   "
+        payload = f"[bold blink red]⚠ CRITICAL SYSTEM WARNING ⚠[/]   [bold white]{alert_text}[/]"
+        
+        from rich.text import Text
+        clean_len = len(Text.from_markup(payload).plain)
+        infinite_payload = payload + payload + payload
+        
+        anomaly_offset += 1
+        if anomaly_offset >= clean_len:
+            anomaly_offset = 0      
+       
+        scrolling_text = Text.from_markup(infinite_payload)[anomaly_offset : anomaly_offset + 120]
+        
+        wrapper = Table.grid(expand=True)
+        wrapper.add_row(grid)
+        wrapper.add_row("\n")
+        
+        wrapper.add_row(Panel(Align.left(scrolling_text), style="on dark_red", box=box.SIMPLE))
+        
+        return Panel(wrapper, title="[ SYSTEM MONITOR ]", border_style="bold red")
+    else:
+        # Normal, quiet operation
+        return Panel(grid, title="[ SYSTEM MONITOR ]", border_style="magenta")
 
 def efficiency_leaderboard_panel():
     table = Table(box=box.SIMPLE_HEAD, expand=True, show_header=True, header_style="bold green")
@@ -1273,7 +1357,15 @@ def efficiency_leaderboard_panel():
     
     sorted_fleet = sorted(scored_fleet, key=lambda x: x['score'], reverse=True)
 
-    for m in sorted_fleet:
+    # --- NEW: Slicer Logic ---
+    page_size = swarm_state.get("page_size", 7)
+    current_page = swarm_state.get("page_current", 0)
+    start_idx = current_page * page_size
+    end_idx = start_idx + page_size
+    page_fleet = sorted_fleet[start_idx:end_idx]
+
+    # --- Use `page_fleet` to only draw the current page slice ---
+    for m in page_fleet:
         bar_len = 10 
         filled = int((m['stability'] / 100) * bar_len)
         gauge_color = "bold cyan" if m['stability'] >= 90 else "bold yellow" if m['stability'] >= 75 else "bold red"
@@ -1344,7 +1436,13 @@ def efficiency_leaderboard_panel():
     wrapper.add_row(Align.center("[bold dim white]- SWARM TUNING ADVISORY -[/]"))
     wrapper.add_row(Align.center("\n".join(advice)))
 
-    return Panel(wrapper, title="[ FLEET HEALTH & EFFICIENCY ]", border_style="green", padding=(0,1))
+    # --- NEW: Dynamic Title Bar ---
+    total_main_miners = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
+    total_pages = max(1, math.ceil(total_main_miners / page_size))
+    page_str = f"PAGE {current_page + 1}/{total_pages}"
+    auto_str = "(AUTO)" if swarm_state.get("page_auto", True) else "(MANUAL)"
+
+    return Panel(wrapper, title=f"[ FLEET HEALTH & EFFICIENCY ] [cyan]{page_str} {auto_str}[/]", border_style="green", padding=(0,1))
 
 def swarm_tuning_advisor():
     advice = []
@@ -1381,18 +1479,117 @@ def swarm_tuning_advisor():
 
     return Panel("\n".join(advice), title="[ SWARM TUNING ADVISORY ]", border_style="magenta")
 
+def create_header_static() -> Panel:
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    
+    total_miners = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro', False))
+    online = sum(1 for m in swarm_state["miners"].values() if m.get('online', False) and not m.get('is_micro', False))
+    status_text = "[bold yellow]DISCOVERY HUNT...[/]" if swarm_state["is_hunting"] else "[bold green]SWARM ACTIVE[/]"
+    
+    epoch_dt = datetime.fromtimestamp(swarm_state.get("telemetry_epoch", time.time()))
+    lifespan = datetime.now() - epoch_dt
+    lifespan_str = f"{lifespan.days}d {lifespan.seconds//3600}h"
+    date_str = epoch_dt.strftime('%d/%m %H:%M')
+    
+    grid.add_row(f"[bold white on blue] BLSIC COMMAND v4.1 [/] {status_text}")
+    
+    grid.add_row(f"[bold white]FLEET:[/] [bold white]{online}/{total_miners}[/]  [dim white]||[/]  [bold white]SINCE:[/] [bold cyan]{date_str}[/] [dim white]({lifespan_str})[/]")
+    
+    return Panel(grid, border_style="blue", box=box.SQUARE)
+
+def generate_carousel() -> Panel:
+    # 1. Grab Core Data
+    btc_th = swarm_state.get('total_btc_th', 0.0)
+    bch_th = swarm_state.get('total_bch_th', 0.0)
+    total_th = btc_th + bch_th
+    power = swarm_state.get('total_power', 0)
+    opex = swarm_state.get('total_opex_daily', 0)
+    peak = swarm_state.get('peak_th', 0)
+    net_ping = swarm_state.get('ping_net', '--')
+    pool_ping = swarm_state.get('ping_pool', '--')
+    
+    # NEW: Calculate Overall Swarm Efficiency (J/TH)
+    fleet_jth = (power / total_th) if total_th > 0 else 0.0
+
+    ambient_temp = "Scanning..."
+    if "ambient_temp" in swarm_state and swarm_state["ambient_temp"] != 0.0:
+        ambient_temp = f"{swarm_state['ambient_temp']}°C"
+
+    # 2. Gamification Tracker
+    active_miners = [m for m in swarm_state.get("miners", {}).values() if m.get("online", True) and not m.get("is_micro")]
+    top_inf = 0.0
+    top_mutant = "None"
+    if active_miners:
+        top_miner = max(active_miners, key=lambda x: float(x.get("v4_inf", 0.0)))
+        top_inf = float(top_miner.get("v4_inf", 0.0))
+        top_mutant = f"{top_miner.get('tag', '?')} ({top_inf:.1f}%)"
+
+    # 3. Define the Pages
+    page_1 = f"[bold white]BTC HASHRATE:[/] [bold orange3]{btc_th:.2f} TH/s[/]   ///   [bold white]BCH HASHRATE:[/] [bold cyan]{bch_th:.2f} TH/s[/]   ///   [bold white]POWER DRAW:[/] [bold yellow]{power:.0f} W[/]"
+    
+    # NEW: Swarm Efficiency replaces the static Latency line
+    page_2 = f"[bold white]FLEET EFFICIENCY:[/] [bold green]{fleet_jth:.1f} J/TH[/]   ///   [bold white]DAILY OPEX:[/] [bold red]£{opex:.2f}/day[/]   ///   [bold white]AMBIENT:[/] [bold cyan]{ambient_temp}[/]"
+    
+    # NEW: The Dynamic Hijack Logic
+    if top_inf >= 20.0:
+        # A rig has hit the Sniffle stage or higher! The virus takes over the screen.
+        page_3 = f"[bold white]PEAK SWARM HASH:[/] [bold green]{peak:.2f} TH/s[/]   ///   [bold blink bright_magenta]☣ APEX MUTANT DETECTED:[/] [bold bright_magenta]{top_mutant}[/]"
+    else:
+        # Standard, quiet operation telemetry
+        page_3 = f"[bold white]PEAK SWARM HASH:[/] [bold green]{peak:.2f} TH/s[/]   ///   [bold white]LATENCY:[/] Net {net_ping}ms | Pool {pool_ping}ms"
+    
+    pages = [page_1, page_2, page_3]
+    
+    # 4. Calculate which page to show based on the system clock (changes every 5 seconds)
+    current_time = int(time.time())
+    page_index = (current_time // 5) % len(pages)
+    
+    # 5. Add a subtle page indicator
+    indicator = f"[dim][ {page_index + 1}/{len(pages)} ][/]"
+    display_text = f"{indicator}   {pages[page_index]}"
+    
+    return Panel(
+        Align.center(display_text), 
+        box=box.SQUARE, 
+        style="on black",
+        border_style="magenta"
+    )
+
 async def run_ui(live_handle, layout, hunter):
+    # Initialize Pagination State
+    if "page_current" not in swarm_state:
+        swarm_state["page_current"] = 0
+        swarm_state["page_size"] = 7
+        swarm_state["page_auto"] = True
+        swarm_state["page_last_turn"] = time.time()
+
     while swarm_state["run_loop"]:
-        
         if swarm_state.get("trigger_hunt", False):
             swarm_state["trigger_hunt"] = False
             asyncio.create_task(instigate_hunt_controller(hunter))
             
         if not swarm_state["is_inputting"]:
             
-            layout["header"].update(create_header())
-            layout["telemetry"].update(hardware_table())
+            # --- PAGINATION ENGINE ---
+            main_count = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
+            total_pages = max(1, math.ceil(main_count / swarm_state.get("page_size", 7)))
             
+            # Enforce bounds in case miners were deleted
+            if swarm_state["page_current"] >= total_pages:
+                swarm_state["page_current"] = max(0, total_pages - 1)
+                
+            # Auto-Turn every 10 seconds
+            if swarm_state.get("page_auto", True):
+                if time.time() - swarm_state.get("page_last_turn", time.time()) > 10.0:
+                    swarm_state["page_current"] = (swarm_state["page_current"] + 1) % total_pages
+                    swarm_state["page_last_turn"] = time.time()
+            
+            # Update Layouts
+            layout["header_static"].update(create_header_static())
+            layout["header_marquee"].update(generate_carousel())
+            
+            layout["telemetry"].update(hardware_table())
             layout["health_col"].update(efficiency_leaderboard_panel())
             layout["luck_ladder"].update(luck_ladder_panel())
             
@@ -1407,15 +1604,15 @@ async def run_ui(live_handle, layout, hunter):
             debug_logs = "\n".join(swarm_state["debug_log"]) if swarm_state["debug_log"] else "System stable. No alerts."
             layout["debug"].update(Panel(debug_logs, title="[ SYSTEM EVENT LOG ]", border_style="dim white"))
             
+            # --- UPDATED FOOTER CONTROLS ---
             footer_grid = Table.grid(expand=True)
             footer_grid.add_column(justify="left", ratio=1)
             footer_grid.add_column(justify="right", no_wrap=True)
             
-            controls = "[bold cyan]H[/]UNT | [bold cyan]I[/]P | [bold cyan]S[/]ET | [bold cyan]C[/]OST | [bold cyan]P[/]OWER | [bold magenta]A[/]CTION | [bold yellow]R[/]ESET | [bold red]D[/]EL | [bold cyan]Q[/]UIT"
+            controls = "[bold cyan]H[/]UNT | [bold cyan]I[/]P | [bold cyan]S[/]ET | [bold cyan]C[/]OST | [bold cyan]P[/]OWER | [bold magenta]A[/]CTION | [bold yellow]R[/]ESET | [bold red]D[/]EL | [bold cyan]M[/] AUTO | [bold cyan]< >[/] PAGE | [bold cyan]Q[/]UIT"
             donation = "[dim]Support Build (BTC): [link=bitcoin:bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy]bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy[/link][/dim]"
             
             footer_grid.add_row(controls, donation)
-            
             layout["footer"].update(Panel(footer_grid, box=box.ASCII))
             
         await asyncio.sleep(0.1)
@@ -1532,6 +1729,7 @@ async def main():
     global loop
     loop = asyncio.get_running_loop()
     load_state()
+
     swarm_state["detected_local_ip"] = get_local_ip()
     
     ensure_fleet_tags() 
@@ -1548,7 +1746,8 @@ async def main():
             handle_commands(hunter, live), 
             update_known_miners(),
             fetch_network_stats(),
-            track_network_latency()  
+            track_network_latency(),
+            fetch_ambient_weather() # <--- START THE WEATHER SENSOR
         )
 
 if __name__ == "__main__":

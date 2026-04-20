@@ -3,14 +3,16 @@ import time
 import math
 import threading
 import socket
-import asyncio  
+import asyncio
+from pydantic import BaseModel  
+from src.discovery.hunter import SwarmHunter
 from datetime import datetime
 from pathlib import Path
 from collections import deque
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
 import httpx
-from discovery.hunter import SwarmHunter
+
 
 # --- CONFIG & PERSISTENCE ---
 SAVE_FILE = Path("swarm_config.json")
@@ -60,7 +62,8 @@ swarm_state = {
     "total_shares_acc": 0,
     "total_shares_rej": 0,
     "swarm_lifetime_hits": {"b": 0, "s": 0, "m": 0, "g": 0, "t": 0, "blocks": 0, "points": 0},
-	"maintenance": {}
+	"maintenance": {},
+	"ambient_temp": 0.0  # <--- NEW
 }
 
 def save_state():
@@ -83,11 +86,16 @@ def save_state():
             "total_shares_acc": swarm_state.get("total_shares_acc", 0),
             "total_shares_rej": swarm_state.get("total_shares_rej", 0),
             "swarm_lifetime_hits": swarm_state.get("swarm_lifetime_hits", {"b": 0, "s": 0, "m": 0, "g": 0, "t": 0, "blocks": 0, "points": 0}),
-			"show_ips": swarm_state.get("show_ips", False),
-			"maintenance": swarm_state.get("maintenance", {}) #
+            "show_ips": swarm_state.get("show_ips", False),
+            "maintenance": swarm_state.get("maintenance", {})
         }
-        with open(SAVE_FILE, "w") as f: 
-            json.dump(payload, f, indent=4)
+        
+        # 1. Convert the dictionary to text on the main thread (Takes 0.001 seconds)
+        state_json = json.dumps(payload, indent=4)
+        
+        # 2. Throw the physical hard drive write to a background thread so the UI never freezes!
+        threading.Thread(target=lambda: SAVE_FILE.write_text(state_json, encoding='utf-8'), daemon=True).start()
+        
     except Exception: 
         pass
 
@@ -633,8 +641,7 @@ async def update_config_api(power: float = None, cost: float = None):
 
 # --- ADD THIS NEW ENDPOINT FOR THE APP TO CALL ---
 @companion_app.post("/maintenance/repaste")
-async def log_repaste(request: dict):
-    tag = request.get("tag")
+async def log_repaste(tag: str):
     if not tag: 
         return {"error": "Missing tag"}
     
@@ -649,8 +656,8 @@ async def log_repaste(request: dict):
     save_state()
     
     return {"status": "success", "tag": tag, "timestamp": swarm_state["maintenance"][tag]["last_repaste"]}
-
-# -------------------------------------------------
+	
+#---------------------------------------------
 
 def start_broadcaster():
     try:
@@ -659,3 +666,21 @@ def start_broadcaster():
         pass
 
 threading.Thread(target=start_broadcaster, daemon=True).start()
+
+async def fetch_ambient_weather():
+    # Coordinates for the console's physical deployment zone
+    lat, lon = 51.208, -1.480
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+    
+    while swarm_state["run_loop"]:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=10.0)
+                if resp.status_code == 200:
+                    weather_data = resp.json()
+                    if "current_weather" in weather_data:
+                        swarm_state["ambient_temp"] = weather_data["current_weather"].get("temperature", 0.0)
+        except Exception:
+            pass
+        await asyncio.sleep(1800) # Refresh every 30 mins
+		
