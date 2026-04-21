@@ -104,7 +104,7 @@ Because this repository does not include a `swarm_config.json` file, the console
 
 <img width="1230" height="669" alt="image" src="https://github.com/user-attachments/assets/2d7a8ff7-da59-42ac-94d2-b99a53efa609" />
 
-
+The ASIC device polling may mean you need to run the HUNT a few times if it doesn't pick them up on the first run. This is due to the miners CPU/API being busy when it gets polled to return information so it won't return and answer to say yes I'm here. The discovery engine will pick it up when you run it a few times in my testing to date. Larger swarms will be interesting to see how we can evolve it if it becomes a bottleneck. 
 ---
 
 ## ⌨️ Keyboard Controls
