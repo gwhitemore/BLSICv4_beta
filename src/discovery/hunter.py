@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import socket
+import sys
 
 class SwarmHunter:
     def __init__(self, subnet=None):
@@ -9,7 +10,7 @@ class SwarmHunter:
             self.subnet = "192.168.1"
         
         # INCREASED TIMEOUTS for ESP32 stability
-        self.timeout = httpx.Timeout(5.0, connect=1.5)
+        self.timeout = httpx.Timeout(8.0, connect=4.0)
         self.headers = {
             "User-Agent": "Mozilla/5.0",
             "Connection": "close", 
@@ -17,6 +18,19 @@ class SwarmHunter:
         }
         
         self.abort_event = asyncio.Event()
+
+        # --- V4.1 OS-AWARE NETWORK PROFILING ---
+        self.is_windows = sys.platform == 'win32'
+        if self.is_windows:
+            # CONSERVATIVE: Protects the weak Windows socket pool
+            self.sem_limit = 5
+            self.stagger_ms = 0.1
+            self.mod_bucket = 5
+        else:
+            # AGGRESSIVE: Unleashes the Linux epoll (Ubuntu Production)
+            self.sem_limit = 20
+            self.stagger_ms = 0.02
+            self.mod_bucket = 20
 
     def _get_local_subnet(self):
         try:
@@ -64,7 +78,6 @@ class SwarmHunter:
                     stratum_url = data.get("stratumURL", stratum_data.get("url", "Solo"))
                     
                     # --- NEW: Capture Dedicated Port for Gamma/NerdQAxe ---
-                    # This is the key piece needed for your BCH correlation
                     stratum_port = data.get("stratumPort", stratum_data.get("port", 0))
                     
                     coin = data.get("coin", stratum_data.get("coin", "BTC"))
@@ -74,13 +87,9 @@ class SwarmHunter:
                     hm = data.get('hashrateMonitor', {})
                     asics_array = hm.get('asics', [])
                     
-                    # Primary: Count objects in the asics array (Best for GT800/NerdQAxe)
-                    # Secondary: Fallback to top-level asicCount key
-                    # Tertiary: Default to 1 for standard Bitaxes
                     if isinstance(asics_array, list) and len(asics_array) > 0:
                         asic_count = len(asics_array)
                     else:
-                        # Ensure we handle the case where asicCount might be None or missing
                         val = data.get("asicCount")
                         asic_count = int(val) if val is not None else 1
                                       
@@ -106,7 +115,7 @@ class SwarmHunter:
                         
                         "stratumUser": str(data.get("stratumUser", stratum_data.get("user", ""))),
                         "stratumURL": stratum_url,
-                        "stratumPort": stratum_port, # NEW: Explicitly passing port to main_ui
+                        "stratumPort": stratum_port, 
                         
                         "bestDiff": float(data.get("bestDiff", 0)),
                         "bestSessionDiff": float(session_diff),
@@ -118,43 +127,30 @@ class SwarmHunter:
 
     async def scan_network(self, logger=None):
         self.abort_event.clear()
-        
-        # 40 concurrent checks: Fast enough to sweep, gentle enough for Bitaxes
-        semaphore = asyncio.Semaphore(40) 
+        # --- Inject Dynamic OS Profiling Variables ---
+        semaphore = asyncio.Semaphore(self.sem_limit) 
         
         async def throttled_check(ip_suffix):
             if self.abort_event.is_set():
                 return None
-                
             full_ip = f"{self.subnet}.{ip_suffix}"
-            
             async with semaphore:
+                # Calculate dynamic jitter based on OS detection
+                await asyncio.sleep(self.stagger_ms * (ip_suffix % self.mod_bucket)) 
+                
                 if self.abort_event.is_set():
                     return None
-
-                # Log immediately inside the batch so the UI progress bar ticks smoothly
                 if logger: logger(full_ip, "probing")
-                
-                # Pass 1: The standard sweep
                 data, status = await self.get_miner_data(full_ip)
-                if data:
-                    if logger: logger(full_ip, status)
-                    return data
-                    
-                # Pass 2: Fast-Retry for dropped packets
-                await asyncio.sleep(0.2) 
-                data, status = await self.get_miner_data(full_ip)
-                if data:
-                    if logger: logger(full_ip, status)
-                    return data
-                    
-                return None
+                if logger: logger(full_ip, status)
+                return data
 
-        # Explicitly wrap in create_task so they hit the event loop instantly
-        tasks = [asyncio.create_task(throttled_check(i)) for i in range(1, 255)]
-        
-        # Gather executes them all and guarantees it yields back to your UI
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter out timeouts and return the valid miner dictionaries
-        return [res for res in results if isinstance(res, dict)]
+        tasks = [throttled_check(i) for i in range(1, 255)]
+        results = []
+        for coro in asyncio.as_completed(tasks):
+            if self.abort_event.is_set():
+                break
+            res = await coro
+            if res:
+                results.append(res)
+        return results
