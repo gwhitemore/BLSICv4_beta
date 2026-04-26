@@ -11,7 +11,7 @@ If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3
 <img width="1287" height="762" alt="image" src="https://github.com/user-attachments/assets/b8cb0687-49ec-41bf-a140-164c752cef61" />
 
 ## ✨ Key Features
-
+## YOU MAY EXPERIENCE SOME KEYBOARD CLICK 5 SEC DELAYS ON ACTIONS WITH LARGE SWARMS DUE TO THE POLLING ## 
 ### 🖥️ Core Console (Python Terminal)
 * **Auto-Discovery Engine:** Automatically scans local subnets to find, classify, and connect new ASIC hardware without manual IP entry.
 * **The "Luck Virus" Gamification:** A dynamic 72-hour mathematical ladder that tracks hardware "infection" (luck) across the global network, assigning mutation stages based on statistical rarity.
