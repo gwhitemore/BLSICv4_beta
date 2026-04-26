@@ -20,6 +20,10 @@ except ImportError:
     termios = None
     fcntl = None
 
+# Add this near the top of main_ui.py, after the imports
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 # --- DEPENDENCY GUARD ---
 try:
     from rich.live import Live
@@ -1094,60 +1098,6 @@ def ensure_fleet_tags():
     except Exception as e:
         swarm_state["debug_log"].append(f"[bold red]TAG ERROR:[/] {str(e)}")
 
-
-
-async def instigate_hunt_controller(hunter):
-    if swarm_state["is_hunting"]:
-        hunter.abort_event.set()
-        swarm_state["is_hunting"] = False
-        return
-        
-    swarm_state["is_hunting"] = True
-    swarm_state["scan_progress"] = 0
-    swarm_state["new_miners_found"] = 0
-    swarm_state["existing_miners_found"] = 0
-    
-    def hunt_logger(ip, status):
-        if status == "probing":
-            swarm_state["scan_progress"] += 1
-        elif status == "Found!":
-            if ip in swarm_state["miners"]: 
-                swarm_state["existing_miners_found"] += 1
-            else: 
-                swarm_state["new_miners_found"] += 1
-
-    found = await hunter.scan_network(logger=hunt_logger)
-    
-    if not hunter.abort_event.is_set():
-        summary_list = []
-        for m in found:
-            ip = m.get('ip')
-            m['type'] = resolve_miner_type(m) 
-            
-            is_new = ip not in swarm_state["miners"]
-            summary_list.append({"ip": ip, "type": m.get("type", "Bitaxe"), "is_new": is_new})
-            
-            if is_new:
-                m['cost'] = 0.0
-                swarm_state["miners"][ip] = m
-            else:
-                swarm_state["miners"][ip].update(m)
-                
-        # --- THE FIX: Run the auto-tagger immediately after the hunt finishes ---
-        ensure_fleet_tags()
-        
-        swarm_state["last_hunt_results"] = summary_list
-        swarm_state["show_summary"] = True
-        swarm_state["summary_timer"] = 10
-        save_state()
-        
-        while swarm_state["summary_timer"] > 0 and swarm_state["run_loop"]:
-            await asyncio.sleep(1)
-            swarm_state["summary_timer"] -= 1
-            
-        swarm_state["show_summary"] = False
-    swarm_state["is_hunting"] = False
-
 async def handle_commands(hunter, live_handle):
     last_h_press = 0  
     
@@ -1556,6 +1506,95 @@ def generate_carousel() -> Panel:
         border_style="magenta"
     )
 
+# --- V4.1 DEDICATED DISCOVERY THREAD MANAGEMENT ---
+hunt_thread_loop = None
+
+async def _isolated_hunt_logic(isolated_hunter):
+    """The actual async hunt logic, running in its own pristine OS thread loop."""
+    swarm_state["is_hunting"] = True
+    swarm_state["scan_progress"] = 0
+    swarm_state["new_miners_found"] = 0
+    swarm_state["existing_miners_found"] = 0
+    
+    def hunt_logger(ip, status):
+        # Update the global vault safely (GIL protects these simple increments)
+        if status == "probing":
+            swarm_state["scan_progress"] += 1
+        elif status == "Found!":
+            if ip in swarm_state["miners"]: 
+                swarm_state["existing_miners_found"] += 1
+            else: 
+                swarm_state["new_miners_found"] += 1
+
+    # This network scan now runs with absolutely zero UI contention!
+    found = await isolated_hunter.scan_network(logger=hunt_logger)
+    
+    if not isolated_hunter.abort_event.is_set():
+        summary_list = []
+        for m in found:
+            ip = m.get('ip')
+            m['type'] = resolve_miner_type(m) 
+            
+            is_new = ip not in swarm_state["miners"]
+            summary_list.append({"ip": ip, "type": m.get("type", "Bitaxe"), "is_new": is_new})
+            
+            if is_new:
+                m['cost'] = 0.0
+                swarm_state["miners"][ip] = m
+            else:
+                swarm_state["miners"][ip].update(m)
+                
+        ensure_fleet_tags()
+        
+        swarm_state["last_hunt_results"] = summary_list
+        swarm_state["show_summary"] = True
+        swarm_state["summary_timer"] = 10
+        save_state()
+        
+        # Countdown the summary screen
+        while swarm_state["summary_timer"] > 0 and swarm_state.get("run_loop", True):
+            await asyncio.sleep(1)
+            swarm_state["summary_timer"] -= 1
+            
+        swarm_state["show_summary"] = False
+        
+    swarm_state["is_hunting"] = False
+
+
+def trigger_background_hunt():
+    """Called by the main UI thread to spawn the isolated discovery thread."""
+    global hunt_thread_loop
+    
+    # If already hunting, use the thread-safe hook to send the abort signal!
+    if swarm_state.get("is_hunting"):
+        if hunt_thread_loop and swarm_state.get("active_hunter"):
+            hunt_thread_loop.call_soon_threadsafe(swarm_state["active_hunter"].abort_event.set)
+        return
+
+    def thread_target():
+        global hunt_thread_loop
+        
+        # 1. Create a pristine event loop just for this OS thread
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        hunt_thread_loop = new_loop
+        
+        # 2. Instantiate a disposable hunter HERE so its asyncio components bind safely
+        subnet = ".".join(swarm_state.get("detected_local_ip", "192.168.1.1").split(".")[:-1])
+        isolated_hunter = SwarmHunter(subnet=subnet)
+        swarm_state["active_hunter"] = isolated_hunter
+        
+        # 3. Fire the logic
+        try:
+            new_loop.run_until_complete(_isolated_hunt_logic(isolated_hunter))
+        finally:
+            new_loop.close()
+            hunt_thread_loop = None
+            swarm_state["active_hunter"] = None
+
+    # Spawn the background worker and immediately return control to the UI
+    threading.Thread(target=thread_target, daemon=True).start()
+
 async def run_ui(live_handle, layout, hunter):
     # Initialize Pagination State
     if "page_current" not in swarm_state:
@@ -1565,9 +1604,54 @@ async def run_ui(live_handle, layout, hunter):
         swarm_state["page_last_turn"] = time.time()
 
     while swarm_state["run_loop"]:
+        # ==========================================
+        # NEW: THE BOOT INTERCEPTOR
+        # Locks the UI in a "warm-up" state while the 
+        # background threads map the local network.
+        # ==========================================
+        if swarm_state.get("system_booting", False):
+            # Suppress any premature button mashing
+            swarm_state["trigger_hunt"] = False 
+            
+            # Draw Core Headers
+            layout["header_static"].update(create_header_static())
+            layout["header_marquee"].update(generate_carousel())
+            
+            # The Warm-Up Overlay
+            boot_grid = Table.grid(expand=True)
+            boot_grid.add_row(Align.center("\n\n[bold yellow]ESTABLISHING NEURAL UPLINKS...[/]"))
+            boot_grid.add_row(Align.center("[dim]Synchronizing fleet telemetry and verifying local network handshakes.[/]"))
+            boot_grid.add_row(Align.center("[bold blink green]PLEASE WAIT[/]\n\n"))
+            
+            layout["telemetry"].update(Panel(boot_grid, title="[ SYSTEM BOOT SEQUENCE ]", border_style="yellow"))
+            
+            # Dim skeleton states for the rest of the dashboard
+            layout["health_col"].update(Panel(Align.center("\n[dim]Warming up...[/]"), border_style="dim"))
+            layout["luck_ladder"].update(Panel(Align.center("\n[dim]Warming up...[/]"), border_style="dim"))
+            layout["trend"].update(Panel(Align.center("\n[dim]Warming up...[/]"), border_style="dim"))
+            
+            layout["solar"].update(solar_saver_panel())
+            layout["system"].update(swarm_intel_panel())
+            layout["lottery"].update(lottery_analysis_panel())
+            layout["podium"].update(investment_podium_panel())
+            layout["archive"].update(luck_archive_panel()) 
+            layout["debug"].update(Panel("[dim]System booting...[/]", title="[ SYSTEM EVENT LOG ]", border_style="dim white"))
+            
+            # Locked Footer
+            footer_grid = Table.grid(expand=True)
+            footer_grid.add_column(justify="center", ratio=1)
+            footer_grid.add_row("[bold dim white]INITIALIZING BACKGROUND NETWORK TASKS... PLEASE WAIT |[/] [bold red]Q[/]UIT")
+            layout["footer"].update(Panel(footer_grid, box=box.ASCII))
+            
+            await asyncio.sleep(0.1)
+            continue # Skip normal rendering until unlocked!
+
+        # ==========================================
+        # STANDARD RUN STATE
+        # ==========================================
         if swarm_state.get("trigger_hunt", False):
             swarm_state["trigger_hunt"] = False
-            asyncio.create_task(instigate_hunt_controller(hunter))
+            trigger_background_hunt() 
             
         if not swarm_state["is_inputting"]:
             
@@ -1575,27 +1659,39 @@ async def run_ui(live_handle, layout, hunter):
             main_count = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
             total_pages = max(1, math.ceil(main_count / swarm_state.get("page_size", 7)))
             
-            # Enforce bounds in case miners were deleted
             if swarm_state["page_current"] >= total_pages:
                 swarm_state["page_current"] = max(0, total_pages - 1)
                 
-            # Auto-Turn every 10 seconds
             if swarm_state.get("page_auto", True):
                 if time.time() - swarm_state.get("page_last_turn", time.time()) > 10.0:
                     swarm_state["page_current"] = (swarm_state["page_current"] + 1) % total_pages
                     swarm_state["page_last_turn"] = time.time()
             
-            # Update Layouts
+            # --- RENDER ENGINE ---
             layout["header_static"].update(create_header_static())
             layout["header_marquee"].update(generate_carousel())
             
+            # The Hardware Matrix now seamlessly draws the scan bar if background hunting is true!
             layout["telemetry"].update(hardware_table())
+            
+            if swarm_state.get("is_hunting", False):
+                layout["debug"].update(Panel(
+                    "[bold yellow]DISCOVERY HUNT IN PROGRESS...[/]\n[dim]Allocating maximum CPU to network discovery sockets.[/]", 
+                    title="[ SYSTEM EVENT LOG ]", border_style="yellow"
+                ))
+                footer_grid = Table.grid(expand=True)
+                footer_grid.add_column(justify="left", ratio=1)
+                footer_grid.add_column(justify="right", no_wrap=True)
+                footer_grid.add_row("[bold red]H[/]UNT (ABORT) | [bold cyan]Q[/]UIT", "")
+                layout["footer"].update(Panel(footer_grid, box=box.ASCII))
+                
+                await asyncio.sleep(0.1)
+                continue
+            
             layout["health_col"].update(efficiency_leaderboard_panel())
             layout["luck_ladder"].update(luck_ladder_panel())
-            
             layout["trend"].update(trend_panel(layout))
             layout["solar"].update(solar_saver_panel())
-            
             layout["system"].update(swarm_intel_panel())
             layout["lottery"].update(lottery_analysis_panel())
             layout["podium"].update(investment_podium_panel())
@@ -1604,7 +1700,7 @@ async def run_ui(live_handle, layout, hunter):
             debug_logs = "\n".join(swarm_state["debug_log"]) if swarm_state["debug_log"] else "System stable. No alerts."
             layout["debug"].update(Panel(debug_logs, title="[ SYSTEM EVENT LOG ]", border_style="dim white"))
             
-            # --- UPDATED FOOTER CONTROLS ---
+            # --- FULL FOOTER CONTROLS ---
             footer_grid = Table.grid(expand=True)
             footer_grid.add_column(justify="left", ratio=1)
             footer_grid.add_column(justify="right", no_wrap=True)

@@ -63,7 +63,8 @@ swarm_state = {
     "total_shares_rej": 0,
     "swarm_lifetime_hits": {"b": 0, "s": 0, "m": 0, "g": 0, "t": 0, "blocks": 0, "points": 0},
 	"maintenance": {},
-	"ambient_temp": 0.0  # <--- NEW
+	"ambient_temp": 0.0,
+	"system_booting": True  # <--- NEW: Engage the Boot Lock at startup
 }
 
 def save_state():
@@ -591,6 +592,15 @@ async def update_known_miners():
                 swarm_state["power_history"].append(total_pw)
 
                 check_and_trigger_72h_reset()
+
+            # ==========================================
+            # --- NEW: THE SYSTEM UNLOCK TRIGGER ---
+            # Once the backend has completed its initial 
+            # telemetry sweep, drop the boot screen.
+            # ==========================================
+            if swarm_state.get("system_booting"):
+                swarm_state["system_booting"] = False
+                swarm_state["debug_log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] [bold green]SYSTEM ONLINE:[/] Boot sequence complete.")
 
         except Exception as loop_error:
             swarm_state["debug_log"].append(f"[bold red]MAIN LOOP DEAD:[/] {str(loop_error)}") 
