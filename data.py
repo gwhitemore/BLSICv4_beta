@@ -67,7 +67,7 @@ swarm_state = {
 	"system_booting": True  # <--- NEW: Engage the Boot Lock at startup
 }
 
-def save_state():
+def save_state(shutdown=False):
     try:
         swarm_state["hashrate_history"] = swarm_state.get("hashrate_history", [])[-MAX_HISTORY:]
         swarm_state["power_history"] = swarm_state.get("power_history", [])[-MAX_HISTORY:]
@@ -91,12 +91,15 @@ def save_state():
             "maintenance": swarm_state.get("maintenance", {})
         }
         
-        # 1. Convert the dictionary to text on the main thread (Takes 0.001 seconds)
         state_json = json.dumps(payload, indent=4)
         
-        # 2. Throw the physical hard drive write to a background thread so the UI never freezes!
-        threading.Thread(target=lambda: SAVE_FILE.write_text(state_json, encoding='utf-8'), daemon=True).start()
-        
+        if shutdown:
+            # --- CRITICAL FIX: Synchronous blocking write for system exit ---
+            SAVE_FILE.write_text(state_json, encoding='utf-8')
+        else:
+            # Detached asynchronous write for UI fluidity
+            threading.Thread(target=lambda: SAVE_FILE.write_text(state_json, encoding='utf-8'), daemon=True).start()
+            
     except Exception: 
         pass
 

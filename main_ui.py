@@ -232,6 +232,48 @@ async def handle_miner_deletion():
                 await asyncio.sleep(1)
     except Exception: pass
 
+async def handle_manual_add(hunter):
+    console.print(Panel("[bold green]MANUAL UPLINK: ADD MINER BY IP[/]", border_style="green"))
+    import sys; sys.stdout.flush()
+    try:
+        target_ip = await async_prompt("\nEnter target IP address (e.g., 192.168.1.50) or 0 to cancel")
+        if not target_ip or target_ip == '0': return
+
+        # Validate basic IPv4 structure
+        parts = target_ip.strip().split('.')
+        if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            print(f"\n[!] Invalid IPv4 format.")
+            await asyncio.sleep(2)
+            return
+
+        if target_ip in swarm_state["miners"]:
+            print(f"\n[!] Target {target_ip} is already in the Swarm Vault.")
+            await asyncio.sleep(2)
+            return
+
+        print(f"\n[*] Probing hardware at {target_ip} (Timeout = 8s)...")
+        
+        # We reuse the hunter's single-target method
+        data, status = await hunter.get_miner_data(target_ip)
+
+        if data and status == "Found!":
+            data['type'] = resolve_miner_type(data)
+            data['cost'] = 0.0
+            
+            # Inject directly into the vault
+            swarm_state["miners"][target_ip] = data
+            ensure_fleet_tags() # Auto-tag it (e.g., BX14)
+            save_state()
+            
+            print(f"\n[+] SUCCESS: {data.get('hostname', 'Miner')} integrated into fleet!")
+        else:
+            print(f"\n[!] CONNECTION FAILED: Asset did not respond ({status}).")
+
+        await asyncio.sleep(2)
+    except Exception as e:
+        print(f"\n[!] Exception during uplink: {e}")
+        await asyncio.sleep(2)
+
 async def handle_miner_action():
     if not swarm_state["miners"]: return
     console.print(Panel("[bold magenta]MINER ACTION TERMINAL[/]", border_style="magenta"))
@@ -1113,6 +1155,10 @@ async def handle_commands(hunter, live_handle):
                 swarm_state["run_loop"] = False
                 live_handle.stop()
                 play_shutdown_sequence() 
+                
+                # --- NEW: Force a blocking save before killing the OS process ---
+                save_state(shutdown=True)
+                
                 import os
                 os._exit(0)
                 
@@ -1121,7 +1167,8 @@ async def handle_commands(hunter, live_handle):
                     last_h_press = time.time()
                     swarm_state["trigger_hunt"] = True
                 
-            elif cmd in ['s', 'c', 'd', 'a']:
+            # --- NEW: Added 'n' to the input intercept list ---
+            elif cmd in ['s', 'c', 'd', 'a', 'n']:
                 swarm_state["is_inputting"] = True
                 
                 live_handle.stop()
@@ -1133,6 +1180,7 @@ async def handle_commands(hunter, live_handle):
                     elif cmd == 'c': await handle_miner_cost_input()
                     elif cmd == 'd': await handle_miner_deletion()
                     elif cmd == 'a': await handle_miner_action()
+                    elif cmd == 'n': await handle_manual_add(hunter) # <-- Maps the manual uplink
                     save_state()
                 finally:
                     console.clear()
@@ -1169,7 +1217,7 @@ async def handle_commands(hunter, live_handle):
                 # Data excellence is permanently preserved.
                 save_state()
                 
-				# ==========================================
+            # ==========================================
             # --- NEW: PAGINATION CONTROLS ADDED HERE ---
             # ==========================================
             elif cmd == 'm':
@@ -1705,7 +1753,10 @@ async def run_ui(live_handle, layout, hunter):
             footer_grid.add_column(justify="left", ratio=1)
             footer_grid.add_column(justify="right", no_wrap=True)
             
-            controls = "[bold cyan]H[/]UNT | [bold cyan]I[/]P | [bold cyan]S[/]ET | [bold cyan]C[/]OST | [bold cyan]P[/]OWER | [bold magenta]A[/]CTION | [bold yellow]R[/]ESET | [bold red]D[/]EL | [bold cyan]M[/] AUTO | [bold cyan]< >[/] PAGE | [bold cyan]Q[/]UIT"
+            # --- THE FIX: Define h_text securely here ---
+            h_text = "[bold red]H[/]UNT (ABORT)" if swarm_state.get("is_hunting", False) else "[bold cyan]H[/]UNT"
+            
+            controls = f"{h_text} | [bold green]N[/]EW | [bold cyan]I[/]P | [bold cyan]S[/]ET | [bold cyan]C[/]OST | [bold cyan]P[/]OWER | [bold magenta]A[/]CTION | [bold yellow]R[/]ESET | [bold red]D[/]EL | [bold cyan]M[/] AUTO | [bold cyan]< >[/] PAGE | [bold cyan]Q[/]UIT"
             donation = "[dim]Support Build (BTC): [link=bitcoin:bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy]bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy[/link][/dim]"
             
             footer_grid.add_row(controls, donation)
@@ -1857,7 +1908,8 @@ if __name__ == "__main__":
         traceback.print_exc()
         input("\nPress Enter to exit...")
     finally: 
-        save_state()
+        # --- NEW: Ensure we save synchronously even if the console crashes ---
+        save_state(shutdown=True)
         console.show_cursor(True)
         import os, sys
         os._exit(0)
