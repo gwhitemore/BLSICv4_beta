@@ -131,7 +131,8 @@ The BLSIC terminal is fully keyboard-driven. Ensure your terminal window is acti
 
 <img width="699" height="360" alt="image" src="https://github.com/user-attachments/assets/8555dd76-4686-4294-bdf2-1594c4308493" />
 
-Once tgged you get the extra information added to the table:
+Once tagged you get the extra information added to the table:
+
 <img width="1300" height="348" alt="image" src="https://github.com/user-attachments/assets/22e15e64-94af-48e0-aa38-611b61848622" />
 
 
