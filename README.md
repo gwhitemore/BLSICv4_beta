@@ -144,6 +144,10 @@ Once tagged you get the extra information added to the table:
 
 ---
 
+You most important file once everything is up and running is your swarm_config.json file (it's brain). You only need to backup that 1 file to get a full recovery of all your information. Inc. swarm lifetime shares, miners, luck archive etc...  When you exit the console it also performs a write out to the json file. To move to another machine, or recover, download the latest code, and then copy over the 'swarm_config.json' from your backup or other machine to the new directory and start up as normal. 
+
+---
+
 ## 🛠️ Supported Hardware & Auto-Detection
 The console's `SwarmHunter` engine uses a combination of Hostnames, Device Models, and Board Versions to automatically identify and color-code your hardware on the dashboard. 
 
