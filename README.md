@@ -162,17 +162,26 @@ The console's `SwarmHunter` engine uses a combination of Hostnames, Device Model
 **What happens if I connect an unsupported miner?**
 If you connect an ASIC that the console does not recognize, the intelligence engine will attempt to look at its hashrate and board version. If it cannot definitively identify the hardware, it will safely default to classifying it as a generic **"Bitaxe"**. >>> is the current logic.. As i have limited Bitaxe HW to date I can add more with community support, plus I have an API discovery tool.
 
-### 🧪 Notes for Testers:
-If you encounter a device that is misclassified or showing "Unknown", please note the `deviceModel` and `boardVersion` listed in its local web UI. Looking forward to expanding the detection matrix!
+---
 
-COMING SOON>> testing and sorting out getting published on the playstore. 
+### 🧪 Notes for Testers:
+If you encounter a device that is misclassified or showing "Unknown", please run: python3 api_diagnostics.py to pull out the api information I will need to add in new identification and diags to pull into the console. 
+
+This will show on the screen some information. Then please send me the log file in the issues tab to log the new miners api. Also let me know the board, model etc you purchased to get the classification correct.  
+
+<img width="1797" height="445" alt="image" src="https://github.com/user-attachments/assets/cc8da01d-7ece-4378-837c-922ade82e86d" />
+
+---
+
+COMING SOON>> CURRENTLY running testing and sorting out getting published on the playstore. 
 
 ## 📱 Android Companion App (Feature Deep Dive)
 The BLSIC Android app acts as a tactical glass display, bringing enterprise-grade monitoring and immersive UI feedback directly to your mobile device.
 
 * **Tactical Haptics & Fluidity:** The UI breathes with the live network data. Raw hashrate sensors are wrapped in native `AnimatedContent` for smooth, fluid number ticking, while the underlying `HapticFeedback` API injects subtle physical clicks during navigation and double-buzz alerts when your hardware hits a network anomaly.
+* **FLEET TELEMETRY:** Information on how the miners are perfoming. 
 * **Silicon Maintenance Bay:** Features live thermal delta-T tracking against local ambient weather data, warning you of MOSFET/Core degradation before physical hardware failure occurs. It actively tracks silicon repaste schedules and calculates hardware thermal penalties.
-* **The Horde (Siege Engine):** An alternative gamification dashboard that visualizes your swarm's lifetime accepted shares as an undead horde attacking a "City Wall" (representing the current global network difficulty).
+* **The Horde (Siege Engine):** An alternative gamification dashboard that visualizes your swarm's lifetime accepted shares as an undead horde walking (representing the current global network difficulty).
 * **Tactical Remote Overrides:** Manage your fleet on the go with direct HTTP reboot signals, pool configuration updates, and target tracking sent directly through the API bridge.
 * **Jackpot Dashboard:** Real-time statistical translation of your current hashrate luck into real-world lottery odds (e.g., matching the probability of hitting a block to winning a National Lottery or a £250k Scratchcard).
 
