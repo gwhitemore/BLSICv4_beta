@@ -49,7 +49,7 @@ blsic_v4/
 Windows Tip:
 Load up Powershell 7+ from the start menu, specifically Powershell 7 once installed. This is a seperate app, rather than the embedded one, which can be installed using the following command: winget install --id Microsoft.Powershell --source winget
 
-Once installed and you start rolling through the standard installation, you may encounter the following error: "File [...] cannot be loaded because running scripts is disabled on this system."
+Once installed and you start rolling through the standard installation, you may encounter the following error while activating the venv: "File [...] cannot be loaded because running scripts is disabled on this system."
 
 To Fix run this from within the terminal window: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process 
 
