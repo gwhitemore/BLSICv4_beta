@@ -105,9 +105,11 @@ python3 main_ui.py
 Because this repository does not include a `swarm_config.json` file, the console will treat your first launch as a fresh deployment. Here is what to expect:
 
 1. **The Boot Sequence:** The terminal will display the BLSIC OS boot logo and initialize the database.
-2. **Auto-Discovery Hunt:** The console will automatically scan your local `192.168.1.x` subnet to hunt for active ASIC miners. If auto hunt doesn't start just press 'H' to kick off the hunter.. 
-3. **Data Vault Creation:** Once the scan finishes, it will generate a brand new `swarm_config.json` file in the root folder. This file permanently stores your fleet telemetry, lifetime shares, and custom settings. 
-4. **API Bridge:** When you launch `main_ui.py`, the system simultaneously spins up a FastAPI server on `http://0.0.0.0:8000` in the background.
+2. **Discovery Hunt:** Press 'H', the console will scan your local `192.168.1.x` subnet by default, to hunt for active ASIC miners. 
+3. **Data Vault Creation:** Once the scan finishes, it will generate a brand new `swarm_config.json` file in the root folder. This file permanently stores your fleet telemetry, lifetime shares, and custom settings.
+4. Recommended:Once all your miners are in the console to check the start / stop. Press 'Q' to exit the app, and restart the console. All your miners and information should be stored in the 'brain' and come back.
+5. Don't forget to then use the key buttons to configure your electricity cost, miner costs, and capture the physical board make for the NerdQ's if you have them, such as 5.1 boards, and 6.1 boards. The system will recognise it's a NerdQAxe++ and prompt for the board number when you assign a purchase price to it. 
+6. **API Bridge:** When you launch `main_ui.py`, the system simultaneously spins up a FastAPI server on `http://0.0.0.0:8000` in the background.
 
 <img width="1230" height="669" alt="image" src="https://github.com/user-attachments/assets/2d7a8ff7-da59-42ac-94d2-b99a53efa609" />
 
@@ -122,7 +124,17 @@ The BLSIC terminal is fully keyboard-driven. Ensure your terminal window is acti
 * **`H` (Hunt):** Forces a manual network scan to discover newly connected ASICs.
 * **`I` (IP Privacy):** Toggles the hardware matrix to hide the first two octets of your local IP addresses.
 * **`S` (Settings):** Opens the prompt to set your local Electricity Cost (£/kWh) and Peak Sun Hours for the solar calculator.
-* **`C` (Cost & Tags):** Allows you to input the exact purchase price of each miner to calculate your Swarm Efficiency (£/TH), and manually assign hardware board versions (e.g., v6.1, 5.1). A nifty feature to identify board versions not in the api, and align limits on Watts / Amps etc as a result. "Currently only on NerdQAxe devices for identifying the tagging" cost works for all. 
+
+<img width="639" height="142" alt="image" src="https://github.com/user-attachments/assets/014e6a22-821c-4698-96e2-1ecb1e1e10e9" />
+
+* **`C` (Cost & Tags):** Allows you to input the exact purchase price of each miner to calculate your Swarm Efficiency (£/TH), and manually assign hardware board versions (e.g., v6.1, 5.1). A nifty feature to identify board versions not in the api, and align limits on Watts / Amps etc as a result. "Currently only on NerdQAxe devices for identifying the tagging" cost works for all.
+
+<img width="699" height="360" alt="image" src="https://github.com/user-attachments/assets/8555dd76-4686-4294-bdf2-1594c4308493" />
+
+Once tgged you get the extra information added to the table:
+<img width="1300" height="348" alt="image" src="https://github.com/user-attachments/assets/22e15e64-94af-48e0-aa38-611b61848622" />
+
+
 * **`P` (Power Mode):** Toggles the dashboard into Solar/Off-Grid mode.
 * **`A` (Action Terminal):** Opens the remote command center to send targeted HTTP reboot signals to specific rigs.
 * **`R` (Reset Views):** Visually recalibrates the trend charts and clears the session peak hashrate. *(Note: This does not delete lifetime data or luck metrics).*
