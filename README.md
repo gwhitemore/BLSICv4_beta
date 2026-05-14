@@ -2,9 +2,9 @@
 
 Welcome to the BLSIC V4 beta testing environment. This project serves as the central intelligence hub and tactical glass display for Bitcoin ASIC swarms. It features a live terminal dashboard for monitoring hardware telemetry, an integrated gamification engine, and a background FastAPI server that acts as a bridge to extend functionality to the Android Companion App (coming soon).
 
-I have also decided to make the console opensource, and will remain opensource. I will be releasing the companion Android app for remote views, and on the go gamification this will be a low priced app and will only be on android I'm afraid. Potentially if the project gets more support and time allows this may get extended to IOS, but currently no plans to. (Sorry apple users)
+I have also decided to make the console opensource, and will remain opensource. I will be releasing the companion Android app for remote views, in the near future. Potentially if the project gets more support and time allows this may get extended to IOS, but currently no plans to. (Sorry apple users)
 
-There will be a known limitation for the view of the number of miners within the console. As of Apr 19th 2026 I have 7 miners and built the interface with this smaller number in mind.. You can adjust the font and view size within the terminal settings to assist to fit more in. I will be working on a page view to allow for a better interface for tables and view for higher number of miners.  
+Added a page view auto scroll feature for large swarms of miners (May 2026)
 
 If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3jdc9q08p8lpvzvy
 
