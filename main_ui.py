@@ -80,7 +80,7 @@ from engine import LuckEngine
 luck_engine = LuckEngine()
 
 # --- NEW: Import the Central Data Vault ---
-from data import swarm_state, load_state, save_state, visual_recalibrate, check_and_trigger_72h_reset, update_known_miners
+from data import swarm_state, load_state, save_state, visual_recalibrate, check_and_trigger_72h_reset, update_known_miners, state_lock
 
 input_queue = asyncio.Queue(maxsize=10)
 
@@ -94,22 +94,62 @@ def get_local_ip():
         s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close(); return ip
     except Exception: return "127.0.0.1"
 
-def get_high_res_graph(data, width=70, height=3, color="cyan"):
+def get_high_res_graph(data, width=70, height=6, color="cyan"):
     effective_width = max(width - 4, 10)
-    if not data or len(data) < 2: return [" " * effective_width] * height, 0, 0
-    braille_chars = ["⡀", "⡄", "⡆", "⡇", "⣇", "⣧", "⣷", "⣿"]
-    current_sample = data[-effective_width:]
+    if not data: return [" " * effective_width] * height, 0, 0
+    
+    # Clean dummy zeros if we have real history values
+    non_zeros = [v for v in data if v > 0]
+    sample_source = non_zeros if len(non_zeros) >= 2 else list(data)
+    
+    # Get last N points
+    current_sample = list(sample_source[-effective_width:])
+    if not current_sample:
+        current_sample = [0.0, 0.0]
+    elif len(current_sample) == 1:
+        current_sample = [current_sample[0], current_sample[0]]
+        
+    # Interpolation to stretch graph to 100% full panel width
+    if len(current_sample) < effective_width:
+        n_points = len(current_sample)
+        interpolated = []
+        for i in range(effective_width):
+            tx = i * (n_points - 1) / max(effective_width - 1, 1)
+            idx = int(tx)
+            if idx >= n_points - 1:
+                interpolated.append(current_sample[-1])
+            else:
+                frac = tx - idx
+                val = current_sample[idx] * (1.0 - frac) + current_sample[idx + 1] * frac
+                interpolated.append(val)
+        current_sample = interpolated
+
     highest, lowest = max(current_sample), min(current_sample)
     rng = max(highest - lowest, 0.01) 
     lines = [""] * height
+    braille_chars = ["⡀", "⡄", "⡆", "⡇", "⣇", "⣧", "⣷", "⣿"]
+    
     for v in current_sample:
         norm = (v - lowest) / rng
         pos = int(norm * (height * 8 - 1))
         for h in range(height):
-            if pos // 8 == (height - 1 - h): lines[h] += f"[{color}]{braille_chars[pos % 8]}[/]"
-            elif pos // 8 > (height - 1 - h): lines[h] += f"[{color}]┃[/]" 
-            else: lines[h] += " "
-    return [l.ljust(effective_width) for l in lines], highest, lowest
+            # Dynamic vertical color gradient (green -> cyan -> blue)
+            pct = h / max(height - 1, 1)
+            if pct < 0.25:
+                r_color = "bold green"
+            elif pct < 0.65:
+                r_color = "cyan"
+            else:
+                r_color = "blue"
+                
+            if pos // 8 == (height - 1 - h): 
+                lines[h] += f"[{r_color}]{braille_chars[pos % 8]}[/]"
+            elif pos // 8 > (height - 1 - h): 
+                lines[h] += f"[{r_color}]┃[/]" 
+            else: 
+                lines[h] += " "
+                
+    return lines, highest, lowest
 
 def format_uptime(seconds):
     if not seconds: return "0s"
@@ -163,15 +203,71 @@ async def async_prompt(message, default=None):
             
     return await asyncio.get_running_loop().run_in_executor(None, _ask)
 
-async def handle_settings_input():
-    console.print(Panel("[bold cyan]GLOBAL SWARM SETTINGS[/]", border_style="cyan"))
+async def handle_power_settings_input():
+    console.print(Panel("[bold yellow]⚡ MICROGRID RENEWABLE SPECIFICATIONS[/]\n\n"
+                        "1) Configure Solar Array (Panel Watts, Count)\n"
+                        "2) Configure Battery Bank (Pack Capacity, Count)\n"
+                        "3) Configure Hybrid Inverter & Wind Turbine limits\n"
+                        "4) Toggle Sunsynk Live Link Mode\n"
+                        "Press Enter to cancel", border_style="yellow"))
     import sys; sys.stdout.flush()
     try:
-        new_cost = await async_prompt("Electricity Cost (£ per kWh)", default=str(swarm_state["elec_cost"]))
-        new_sun = await async_prompt("Peak Sun Hours (UK Avg 4.0)", default=str(swarm_state["sun_hours"]))
-        if new_cost is not None and new_sun is not None:
-            swarm_state["elec_cost"] = float(new_cost)
-            swarm_state["sun_hours"] = float(new_sun)
+        opt = await async_prompt("\nSelect Microgrid parameter #")
+        if not opt: return
+        
+        if opt == "1":
+            new_w = await async_prompt("Solar Panel Rating (Watts per panel)", default=str(swarm_state.get("solar_panel_watts", 475.0)))
+            new_count = await async_prompt("Number of Solar Panels", default=str(swarm_state.get("solar_panel_count", 19.0)))
+            if new_w is not None: swarm_state["solar_panel_watts"] = float(new_w)
+            if new_count is not None: swarm_state["solar_panel_count"] = float(new_count)
+            print("[+] Solar array specifications updated.")
+            
+        elif opt == "2":
+            new_kwh = await async_prompt("Battery Capacity per pack (kWh)", default=str(swarm_state.get("battery_kwh_per", 5.3)))
+            new_count = await async_prompt("Number of Battery Packs", default=str(swarm_state.get("battery_count", 2.0)))
+            if new_kwh is not None: swarm_state["battery_kwh_per"] = float(new_kwh)
+            if new_count is not None: swarm_state["battery_count"] = float(new_count)
+            print("[+] Battery storage specifications updated.")
+            
+        elif opt == "3":
+            new_inv = await async_prompt("Inverter Capacity Limit (kW)", default=str(swarm_state.get("inverter_kw", 10.0)))
+            new_wind = await async_prompt("Wind Turbine Peak Rating (kW)", default=str(swarm_state.get("wind_kw", 3.0)))
+            if new_inv is not None: swarm_state["inverter_kw"] = float(new_inv)
+            if new_wind is not None: swarm_state["wind_kw"] = float(new_wind)
+            print("[+] Inverter & Wind ratings updated.")
+            
+        elif opt == "4":
+            current_link = swarm_state.get("sunsynk_enabled", False)
+            toggle = await async_prompt(f"Enable Sunsynk API Live Link? (yes/no, currently {'YES' if current_link else 'NO'})", default="yes" if not current_link else "no")
+            if toggle is not None:
+                swarm_state["sunsynk_enabled"] = toggle.strip().lower() in ["y", "yes", "true", "1"]
+                print(f"[+] Sunsynk Live Link {'ENABLED (Mock Mode Active)' if swarm_state['sunsynk_enabled'] else 'DISABLED'}")
+                
+        await asyncio.sleep(1.5)
+    except Exception as e:
+        print(f"\n[!] Input Error: {e}"); time.sleep(2)
+
+async def handle_settings_input():
+    console.print(Panel("[bold cyan]GLOBAL SWARM SETTINGS[/]\n\n"
+                        "1) Configure Electricity Cost (£/kWh) & Peak Sun Hours\n"
+                        "2) Configure Microgrid Renewable Specifications (Solar/Battery/Inverter)\n"
+                        "Press Enter to cancel", border_style="cyan"))
+    import sys; sys.stdout.flush()
+    try:
+        opt = await async_prompt("\nSelect category #")
+        if not opt: return
+        
+        if opt == "1":
+            new_cost = await async_prompt("Electricity Cost (£ per kWh)", default=str(swarm_state.get("elec_cost", 0.22)))
+            new_sun = await async_prompt("Peak Sun Hours (UK Avg 4.0)", default=str(swarm_state.get("sun_hours", 4.0)))
+            if new_cost is not None: swarm_state["elec_cost"] = float(new_cost)
+            if new_sun is not None: swarm_state["sun_hours"] = float(new_sun)
+            print("[+] Swarm electricity parameter updated.")
+            await asyncio.sleep(1.5)
+            
+        elif opt == "2":
+            await handle_power_settings_input()
+            
     except Exception as e:
         print(f"\n[!] Input Error: {e}"); time.sleep(2)
 
@@ -185,7 +281,9 @@ async def handle_miner_cost_input():
     miner_list = list(swarm_state["miners"].keys())
     for i, ip in enumerate(miner_list, 1):
         m = swarm_state["miners"][ip]
-        console.print(f"{i}) {ip} - {m.get('hostname', 'Unknown')} (£{m.get('cost', 0)})")
+        override_str = f" [cyan](Override: {m['coin_override']})[/]" if m.get('coin_override') else ""
+        coin_str = f" [yellow][{m.get('coin_type', 'BTC')}][/]"
+        console.print(f"{i}) {ip} - {m.get('hostname', 'Unknown')}{coin_str}{override_str} (£{m.get('cost', 0)})")
         
     import sys; sys.stdout.flush()
     try:
@@ -209,6 +307,18 @@ async def handle_miner_cost_input():
             if hw_input:
                 swarm_state["miners"][target_ip]["manual_hw_version"] = hw_input.strip()
                 print(f"[+] Board Version tagged as v{hw_input.strip()}")
+                
+        # 3. Ask for Coin Override
+        current_override = swarm_state["miners"][target_ip].get("coin_override", "AUTO")
+        coin_input = await async_prompt(f"Coin Override (BTC/BCH/FNC/XEC/BSV or press Enter for AUTO)", default=str(current_override))
+        if coin_input is not None:
+            c_upper = coin_input.strip().upper()
+            if c_upper in ["BTC", "BCH", "FNC", "XEC", "BSV"]:
+                swarm_state["miners"][target_ip]["coin_override"] = c_upper
+                print(f"[+] Coin override set to {c_upper}")
+            else:
+                swarm_state["miners"][target_ip]["coin_override"] = ""
+                print("[+] Coin override cleared (using Auto-Detect)")
                 
         await asyncio.sleep(1)
     except Exception: pass
@@ -324,15 +434,15 @@ def make_layout():
     layout["left_col"].split_column(
         Layout(name="telemetry", ratio=4),
         Layout(name="matrix_row", ratio=5),
-        Layout(name="trend_row", ratio=2)
+        Layout(name="trend_row", ratio=3)
     )
     layout["matrix_row"].split_row(
         Layout(name="health_col", ratio=4),
         Layout(name="luck_ladder", ratio=6)
     )
     layout["trend_row"].split_row( 
-        Layout(name="solar", ratio=3),
-        Layout(name="trend", ratio=7)
+        Layout(name="solar", ratio=4),
+        Layout(name="trend", ratio=6)
     )
     layout["right_col"].split_column(
         Layout(name="system", size=12),
@@ -348,43 +458,134 @@ def lottery_analysis_panel():
     bch_th = swarm_state.get('total_bch_th', 0.0)
     daily_opex = swarm_state.get('total_opex_daily', 0.0)
     
-    analysis = luck_engine.get_lotto_analysis(daily_opex, btc_th, bch_th)
+    live_btc_diff = swarm_state.get("btc_net_diff", 101_000_000_000_000.0)
+    live_bch_diff = swarm_state.get("bch_net_diff", 500_000_000_000.0)
+    
+    analysis = luck_engine.get_lotto_analysis(daily_opex, btc_th, bch_th, live_btc_diff, live_bch_diff)
     border_style = "bright_white" if swarm_state["flash_timer"] > 0 else "magenta"
     
+    # Calculate best round candidate
+    max_round_best = 0.0
+    best_miner_tag = "None"
+    best_miner_coin = "BTC"
+    
+    with state_lock:
+        for ip, m in swarm_state.get("miners", {}).items():
+            if m.get('online'):
+                rb = float(m.get('round_best_diff', 0.0))
+                if rb > max_round_best:
+                    max_round_best = rb
+                    best_miner_tag = m.get('tag', m.get('hostname', ip))
+                    best_miner_coin = m.get('coin_type', 'BTC')
+
+    # Helper for ultra-compact k/M visual formatting
+    def fmt_val(val, is_currency=False):
+        if not isinstance(val, (int, float)): return str(val)
+        prefix = "£" if is_currency else ""
+        if val >= 1_000_000:
+            div = val / 1_000_000.0
+            return f"{prefix}{div:.1f}M" if not div.is_integer() else f"{prefix}{int(div)}M"
+        elif val >= 1_000:
+            div = val / 1_000.0
+            return f"{prefix}{div:.1f}k" if not div.is_integer() else f"{prefix}{int(div)}k"
+        else:
+            return f"{prefix}{int(val)}" if isinstance(val, float) and val.is_integer() else f"{prefix}{val}"
+
+    # Grid container for vertical stacking
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
     
-    grid.add_row(f"[bold magenta]LOTTERY PARITY[/]")
-    grid.add_row(f"Daily OPEX: £{daily_opex:.2f} | Tickets: [yellow]{analysis.get('equiv_tickets', 0):.2f}[/]")
-    grid.add_row("-" * 15)
+    # Header summary row (ultra-compact to prevent wrapping and stretching)
+    grid.add_row(
+        f" [bold white]72H Swarm OPEX:[/] £{analysis.get('opex_72h', 0):.2f} | "
+        f"[bold yellow]Buy-In:[/] {analysis.get('equiv_tickets', 0):.2f} Tix"
+    )
+    grid.add_row("")
+    
+    # Parity Table (uncluttered 3-column layout)
+    table = Table(box=None, expand=True, show_header=True, header_style="bold cyan", padding=(0, 1))
+    table.add_column("GAME (DRAWS/WK)", style="bold white", no_wrap=True)
+    table.add_column("JACKPOT", style="bold green", justify="right", no_wrap=True)
+    table.add_column("72H ODDS", style="bold yellow", justify="right", no_wrap=True)
     
     b_odds = analysis.get('btc_odds', 'Offline')
     h_odds = analysis.get('bch_odds', 'Offline')
     profiles = analysis.get('profiles', {})
     
-    grid.add_row("[bold cyan]vs. National Lotto (£15M)[/]")
-    if isinstance(b_odds, int) and 'lotto' in profiles:
-        color = "green" if profiles['lotto'].get('btc_luck', 0) > 1 else "yellow"
-        grid.add_row(f"BTC Solo: 1:{b_odds:,} [{color}]({profiles['lotto'].get('btc_luck', 0):.1f}x odds)[/]")
-    if isinstance(h_odds, int) and 'lotto' in profiles:
-        color = "green" if profiles['lotto'].get('bch_luck', 0) > 1 else "yellow"
-        grid.add_row(f"BCH Solo: 1:{h_odds:,} [{color}]({profiles['lotto'].get('bch_luck', 0):.1f}x odds)[/]")
+    # Solo BTC row
+    btc_jackpot = "£162.5k" # 3.125 BTC * £52,000
+    btc_odds_str = f"1:{fmt_val(b_odds)}" if isinstance(b_odds, int) else "[dim]Offline[/]"
+    table.add_row("Solo BTC (1,008)", btc_jackpot, btc_odds_str)
+    
+    # Solo BCH row
+    bch_jackpot = "£1.1k" # 3.125 BCH * £352
+    bch_odds_str = f"1:{fmt_val(h_odds)}" if isinstance(h_odds, int) else "[dim]Offline[/]"
+    table.add_row("Solo BCH (1,008)", bch_jackpot, bch_odds_str, end_section=True)
+    
+    # National Lotto row
+    lotto_jackpot = "£15M"
+    lotto_odds_str = "1:45.1M"
+    table.add_row("UK Lotto (2)", lotto_jackpot, lotto_odds_str)
+    
+    # EuroMillions row
+    euro_jackpot = "£100M"
+    euro_odds_str = "1:139.8M"
+    table.add_row("EuroMillions (2)", euro_jackpot, euro_odds_str)
+    
+    grid.add_row(table)
+    grid.add_row("[dim]─────────────────────────────────────────────────[/]")
+    
+    # Choose active coin for parity ticket mapping subtext
+    primary_coin = "BTC" if btc_th >= bch_th else "BCH"
+    primary_odds = b_odds if primary_coin == "BTC" else h_odds
+    
+    lotto_sub = "[dim]Offline[/]"
+    euro_sub = "[dim]Offline[/]"
+    
+    if isinstance(primary_odds, int):
+        if 'lotto' in profiles:
+            match_tix = profiles['lotto'].get('btc_match_tickets' if primary_coin == "BTC" else 'bch_match_tickets', 0)
+            match_cost = profiles['lotto'].get('btc_match_cost' if primary_coin == "BTC" else 'bch_match_cost', 0)
+            lotto_sub = f"UK Lotto: [bold green]{fmt_val(match_tix)} tix[/] ({fmt_val(match_cost, True)})"
+        if 'euromillions' in profiles:
+            match_tix = profiles['euromillions'].get('btc_match_tickets' if primary_coin == "BTC" else 'bch_match_tickets', 0)
+            match_cost = profiles['euromillions'].get('btc_match_cost' if primary_coin == "BTC" else 'bch_match_cost', 0)
+            euro_sub = f"EuroMillions: [bold green]{fmt_val(match_tix)} tix[/] ({fmt_val(match_cost, True)})"
+            
+    grid.add_row(" [bold yellow]Swarm Parity Buy-In (to match odds):[/]")
+    grid.add_row(f"  ➔ {lotto_sub}")
+    grid.add_row(f"  ➔ {euro_sub}")
+    grid.add_row("[dim]─────────────────────────────────────────────────[/]")
+    
+    # Luck Engine (Swarm Best Share) Row
+    if max_round_best > 0:
+        res = luck_engine.get_best_share_probability(max_round_best, best_miner_coin, live_btc_diff, live_bch_diff)
+        if res:
+            formatted_best = luck_engine.format_diff_scaled(max_round_best)
+            coin_color = "cyan" if best_miner_coin == "BCH" else "orange3"
+            grid.add_row(
+                f" [bold cyan]LUCK ENGINE:[/] Best [bold]{formatted_best}[/] by [bold white]{best_miner_tag}[/] ([bold {coin_color}]{best_miner_coin}[/])"
+            )
+            grid.add_row(
+                f"             ➔ Odds [bold yellow]1:{fmt_val(res['odds'])}[/] ({res['prob_percent']:.5f}% block chance)"
+            )
+            grid.add_row(
+                f"             ➔ Lotto: [bold green]{res['equivalence']}[/]"
+            )
+        else:
+            grid.add_row(" [bold cyan]LUCK ENGINE:[/] Awaiting share candidates...")
+    else:
+        grid.add_row(" [bold cyan]LUCK ENGINE:[/] Awaiting share candidates...")
         
-    grid.add_row("[bold cyan]vs. Scratchcard (£250k)[/]")
-    if isinstance(b_odds, int) and 'scratchcard' in profiles:
-        color = "green" if profiles['scratchcard'].get('btc_luck', 0) > 1 else "yellow"
-        grid.add_row(f"BTC Solo: [{color}]({profiles['scratchcard'].get('btc_luck', 0):.2f}x odds)[/]")
-    if isinstance(h_odds, int) and 'scratchcard' in profiles:
-        color = "green" if profiles['scratchcard'].get('bch_luck', 0) > 1 else "yellow"
-        grid.add_row(f"BCH Solo: [{color}]({profiles['scratchcard'].get('bch_luck', 0):.2f}x odds)[/]")
-
-    return Panel(grid, title="[ LOTTERY ANALYSIS ]", border_style=border_style)
+    return Panel(grid, title="[ 72H LOTTERY & LUCK ENGINE ]", border_style=border_style)
 
 def trend_panel(layout_obj):
-    history_data = swarm_state.get("hashrate_history", [0, 0])
+    history_data = list(swarm_state.get("hashrate_history", [0, 0]))
     if len(history_data) < 2: history_data = [0, 0]
     
-    target_width = get_layout_width("trend", layout_obj) 
+    # Calculate target width dynamically using console.width:
+    # 10/13 is left column, 6/10 is trend panel split, minus 4 characters for borders
+    target_width = int(console.width * (10.0 / 13.0) * (6.0 / 10.0)) - 4
     if target_width <= 10: target_width = 80 
         
     live_total = swarm_state.get('total_btc_th', 0.0) + swarm_state.get('total_bch_th', 0.0)
@@ -393,7 +594,7 @@ def trend_panel(layout_obj):
     if not clean_sample: clean_sample = history_data[-target_width:]
 
     try:
-        spark, min_val, max_val = get_high_res_graph(history_data, width=target_width, height=3, color="cyan")
+        spark, min_val, max_val = get_high_res_graph(history_data, width=target_width, height=4, color="cyan")
         display_min = max(min_val, live_total * 0.8) if live_total > 0 else 0
     except Exception:
         spark, display_min, max_val = [" [dim]Syncing Trend...[/] "], 0, 0
@@ -481,7 +682,7 @@ def hardware_table():
     table.add_column("TYPE", width=16, no_wrap=True) 
     table.add_column("TAG", justify="center", no_wrap=True) 
     table.add_column("COIN", width=5, justify="center", no_wrap=True)
-    table.add_column("POOL", width=5, no_wrap=True, overflow="ellipsis")
+    table.add_column("POOL", width=10, no_wrap=True, overflow="ellipsis")
     table.add_column("SESS DIFF", justify="right", no_wrap=True)
     table.add_column("BEST DIFF", justify="right", no_wrap=True)
     table.add_column("TH/s", justify="right", width=7, no_wrap=True)
@@ -560,7 +761,25 @@ def hardware_table():
                 
             global_best = float(m.get('bestDiff', 0.0))
             raw_url = str(m.get('stratumURL', 'Solo'))
-            pool = raw_url.replace('stratum+tcp://', '').replace('stratum+ssl://', '').split('.')[0]
+            
+            # Robust Pool String Extractor (extracts domain or local IP + port)
+            clean_url = raw_url.replace('stratum+tcp://', '').replace('stratum+ssl://', '')
+            if ':' in clean_url:
+                host_port = clean_url.split(':')
+                host = host_port[0]
+                port = host_port[1]
+            else:
+                host = clean_url
+                port = ""
+                
+            parts = host.split('.')
+            is_ip = len(parts) == 4 and all(p.isdigit() for p in parts)
+            
+            if is_ip:
+                pool = f"{parts[2]}.{parts[3]}:{port}" if port else f"{parts[2]}.{parts[3]}"
+            else:
+                domain_prefix = host.split('.')[0]
+                pool = f"{domain_prefix}:{port}" if port else domain_prefix
             
             temp_str = f"[green]{core_t:.0f}°C[/]"
             if core_t >= 80: temp_str = f"[bold blink red]{core_t:.0f}°C[/]"
@@ -638,19 +857,7 @@ def hardware_table():
         wrapper.add_row(Align.left("\n[bold yellow]MICRO SCOUT FLEET[/]"))
         wrapper.add_row(micro_table)
 
-    agg_acc = swarm_state.get('total_shares_acc', 0)
-    agg_rej = swarm_state.get('total_shares_rej', 0)
-    tot_shares = agg_acc + agg_rej
-    rej_ratio = (agg_rej / tot_shares * 100) if tot_shares > 0 else 0.0
-    rej_color = "bold red" if agg_rej > 0 else "dim"
-
-    shares_str = (
-        f"\n[bold yellow]SWARM LIFETIME SHARES[/]   "
-        f"[dim]Acc:[/] [bold white]{agg_acc:,}[/]   [dim]||[/]   "
-        f"[dim]Rej:[/] [{rej_color}]{agg_rej:,}[/] [dim]({rej_ratio:.2f}%)[/]"
-    )
-
-    wrapper.add_row(Align.center(f"\n[bold dim white]ASIC SWARM ASSETS[/]\n{legend_text}\n\n{mapping_str}\n{shares_str}"))
+    wrapper.add_row(Align.center(f"\n[bold dim white]ASIC SWARM ASSETS[/]\n{legend_text}\n\n{mapping_str}"))
 
     # --- NEW: Dynamic Title Bar ---
     total_pages = max(1, math.ceil(len(main_ips) / page_size))
@@ -661,59 +868,121 @@ def hardware_table():
 
 def solar_saver_panel():
     total_w = swarm_state.get('total_power', 0)
-    base_limit = SOLAR_PANEL_WATTAGE
-    effective_limit = int(base_limit * BIFACIAL_GAIN) 
-    is_off_grid = swarm_state.get('solar_mode', False) 
+    
+    # Load specs
+    solar_w = swarm_state.get("solar_panel_watts", 475.0)
+    solar_count = swarm_state.get("solar_panel_count", 19.0)
+    battery_kwh = swarm_state.get("battery_kwh_per", 5.3)
+    battery_count = swarm_state.get("battery_count", 2.0)
+    inverter_kw = swarm_state.get("inverter_kw", 10.0)
+    wind_kw = swarm_state.get("wind_kw", 3.0)
     sun_hours = swarm_state.get('sun_hours', 4.0) 
     
-    grid = Table.grid(expand=True)
-    grid.add_column(ratio=1)
+    # Mathematical models
+    p_solar_installed = solar_w * solar_count
+    p_solar_effective = p_solar_installed * 1.10 # 10% rear gain
+    p_wind_installed = wind_kw * 1000.0
+    p_renewable_max = p_solar_effective + p_wind_installed
+    p_inverter_limit = inverter_kw * 1000.0
     
-    if is_off_grid:
-        ratio = total_w / effective_limit if effective_limit > 0 else 0
-        bar_len = 35
-        filled = min(int(ratio * bar_len), bar_len)
-        
-        if ratio > 1.0:
-            bar = f"[bold red]{'█' * bar_len}[/]"
-            status = "[bold red]GRID DEPENDENT[/]"
-            color = "red"
-            alert_text = f"Exceeding solar capacity by {total_w - effective_limit:.0f}W"
-        else:
-            bar = f"[bold green]{'█' * filled}[/][dim white]{'░' * (bar_len - filled)}[/]"
-            status = "[bold green]100% OFF-GRID[/]"
-            color = "green"
-            alert_text = f"Excess solar buffer: {effective_limit - total_w:.0f}W"
-            
-        grid.add_row(f"[bold yellow]ACTIVE BIFACIAL SOLAR ({effective_limit}W)[/]")
-        grid.add_row(f"Live Swarm Draw: [{color}]{total_w:.0f}W[/]")
-        grid.add_row(f"[{bar}]")
-        grid.add_row(status)
-        grid.add_row(f"[dim]{alert_text}[/]")
-        
+    e_battery = battery_kwh * battery_count
+    e_usable = e_battery * 0.90 # 90% depth of discharge
+    
+    # Automatically determine Day/Night based on geolocated/local system hour
+    local_hour = datetime.now().hour
+    is_sunny = (6 <= local_hour < 18) # Day/Sunny between 6:00 AM and 6:00 PM (18:00) local time
+    
+    if is_sunny:
+        solar_gen = p_solar_effective * 0.85 # 85% peak output on a sunny day
+        wind_gen = p_wind_installed * 0.15 # 15% wind speed in daylight
+        solar_status = "SUNNY ☀"
     else:
-        daily_wh = total_w * 24
-        night_hours = 24 - sun_hours
-        night_wh_req = (total_w * night_hours) * 1.2
-        req_daily_wh = daily_wh * 1.2 
-        req_solar_w = req_daily_wh / sun_hours if sun_hours > 0 else 0
+        solar_gen = 0.0
+        wind_gen = p_wind_installed * 0.35 # 35% standard night/overcast wind
+        solar_status = "DARK ☾"
         
-        panels_needed = math.ceil(req_solar_w / effective_limit) if req_solar_w > 0 else 0
-        rec_array_w = panels_needed * effective_limit
-        rec_battery_kwh = (night_wh_req / 0.8) / 1000 
+    total_gen = solar_gen + wind_gen
+    total_gen_capped = min(total_gen, p_inverter_limit)
+    net_flow = total_gen_capped - total_w
+    
+    # Daily 24H energy balances
+    e_swarm_daily = (total_w / 1000.0) * 24.0
+    e_solar_daily = (p_solar_effective / 1000.0) * sun_hours
+    e_wind_daily = wind_kw * 24.0 * 0.20 # 20% wind capacity factor
+    e_gen_daily = e_solar_daily + e_wind_daily
+    
+    coverage_pct = 0.0
+    if e_swarm_daily > 0:
+        coverage_pct = (e_gen_daily / e_swarm_daily) * 100.0
+
+    # LEFT SUB-GRID: Specifications & Storage
+    left_sub = Table.grid(expand=True)
+    left_sub.add_column(ratio=1)
+    left_sub.add_row("[bold cyan]RENEWABLE ARRAY SPECS[/]")
+    left_sub.add_row(f" ➔ Solar: {solar_count:.0f}x{solar_w:.0f}W [dim]({p_solar_effective/1000.0:.1f}kWpk)[/]")
+    left_sub.add_row(f" ➔ Wind: {wind_kw:.1f}kW [dim](Planned)[/]")
+    left_sub.add_row(f" ➔ Inverter: {inverter_kw:.1f}kW [dim](3-Ph)[/]")
+    left_sub.add_row("")
+    left_sub.add_row("[bold green]BATTERY STORAGE CAPACITY[/]")
+    left_sub.add_row(f" ➔ Storage: {battery_count:.0f}x{battery_kwh:.1f}kWh [dim]({e_battery:.1f}kWh)[/]")
+    left_sub.add_row(f" ➔ Usable: [bold green]{e_usable:.1f}kWh[/] [dim](90% DoD)[/]")
+
+    # RIGHT SUB-GRID: Live flows & balances
+    right_sub = Table.grid(expand=True)
+    right_sub.add_column(ratio=1)
+    right_sub.add_row("[bold yellow]LIVE MICROGRID FLOWS[/] [dim](Auto-Time)[/]")
+    right_sub.add_row(f" ➔ Sky: {'[bold yellow]☀ DAY/SUNNY[/]' if is_sunny else '[bold blue]☾ NIGHT/DARK[/]'}")
+    right_sub.add_row(f" ➔ Solar: [bold yellow]{solar_gen:.0f} W[/] [dim]({solar_status})[/]")
+    right_sub.add_row(f" ➔ Wind: [bold cyan]{wind_gen:.0f} W[/]")
+    right_sub.add_row(f" ➔ Swarm: [bold yellow]{total_w:.0f} W[/] [dim]({(total_w/230.0):.1f}A)[/]")
+    
+    if net_flow >= 0:
+        bat_charge = min(net_flow, 5000.0) # max 5kW charge rate
+        grid_export = max(0.0, net_flow - bat_charge)
+        right_sub.add_row(f" ➔ Net: [bold green]SURPLUS +{net_flow:.0f} W[/]")
+        right_sub.add_row(f" ➔ Battery: [bold green]CHARGE (+{bat_charge:.0f}W)[/]")
+        if grid_export > 0:
+            right_sub.add_row(f" ➔ Grid: [bold green]EXPORT (+{grid_export:.0f}W)[/]")
+        right_sub.add_row(" ➔ Status: [bold green]SELF-SUSTAINED[/]")
+    else:
+        deficit = abs(net_flow)
+        bat_discharge = min(deficit, e_usable * 1000.0)
+        grid_import = max(0.0, deficit - bat_discharge)
         
-        grid.add_row("[bold cyan]OFF-GRID RECOMMENDER (BIFACIAL)[/]")
-        grid.add_row(f"Swarm Draw: [red]{total_w:.0f}W[/] ({daily_wh/1000:.1f} kWh/day)")
-        grid.add_row("-" * 15)
-        
-        if total_w > 0:
-            grid.add_row(f"Array: [bold yellow]{panels_needed}x {base_limit}W Panels[/] ({rec_array_w}W Effective)")
-            grid.add_row(f"Night Battery: [bold green]{rec_battery_kwh:.1f} kWh[/] [dim](80% DoD)[/]")
-            grid.add_row(f"[dim]Includes 10% rear-gain + 20% sys loss[/]")
+        right_sub.add_row(f" ➔ Net: [bold red]DEFICIT -{deficit:.0f} W[/]")
+        if bat_discharge > 0:
+            runtime = e_usable / (bat_discharge / 1000.0)
+            right_sub.add_row(f" ➔ Battery: [bold red]DRAIN (-{bat_discharge:.0f}W)[/]")
+            right_sub.add_row(f" ➔ Cushion: [bold red]{runtime:.1f} Hrs Left[/]")
         else:
-            grid.add_row("[dim]Awaiting power telemetry...[/]")
+            right_sub.add_row(" ➔ Battery: [bold red]DEPLETED (0.0 kWh)[/]")
             
-    return Panel(grid, title="[ POWER METRICS ]", border_style="yellow")
+        if grid_import > 0:
+            right_sub.add_row(f" ➔ Grid: [bold orange3]IMPORT (+{grid_import:.0f}W)[/]")
+            right_sub.add_row(" ➔ Status: [bold red]GRID DEPENDENT[/]")
+        else:
+            right_sub.add_row(" ➔ Grid: [bold green]0 W (Off-Grid)[/]")
+            right_sub.add_row(" ➔ Status: [bold green]SUSTAINED BY BATTERY[/]")
+            
+    right_sub.add_row("")
+    
+    # 24H Sustainability Coverage progress bar
+    color = "green" if coverage_pct >= 90.0 else "yellow" if coverage_pct >= 50.0 else "red"
+    bar_len = 12
+    filled = min(int((coverage_pct / 100.0) * bar_len), bar_len)
+    bar_str = f"[bold {color}]{'█' * filled}[/][dim white]{'░' * (bar_len - filled)}[/]"
+    
+    right_sub.add_row(f"[bold magenta]24H COVERAGE:[/] [{bar_str}] [bold {color}]{coverage_pct:.1f}%[/] [dim]({e_gen_daily:.1f}/{e_swarm_daily:.1f} kWh/d)[/]")
+    
+    # Main grid combining Left and Right Sub-grids side-by-side
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=4)
+    grid.add_column(width=2) # separator spacing
+    grid.add_column(ratio=6)
+    
+    grid.add_row(left_sub, "", right_sub)
+    
+    return Panel(grid, title=f"[ ⚡ MICROGRID TELEMETRY ] [bold white]P: CONFIGURE[/]", border_style="yellow")
 
 def investment_podium_panel():
     main_miners = [m for m in swarm_state["miners"].values() if not m.get('is_micro', False)]
@@ -912,32 +1181,10 @@ def luck_ladder_panel():
     )
     if tot_blocks > 0: agg_hits_str += f"  [bold gold1]🏆 {tot_blocks}[/]"
 
-    wrapper = Table.grid(expand=True)
-    wrapper.add_row(table)
-    wrapper.add_row("") 
-    
-    swarm_banner = f"[bold dim white]LIFETIME SWARM GROWTH HITS:[/] {agg_hits_str}"
-    wrapper.add_row(Align.center(swarm_banner))
-    wrapper.add_row("") 
-    wrapper.add_row(Align.center("[bold dim white]--- GAMIFICATION ENGINE ---[/]"))
-    
-    # --- LEGEND UPDATE ---
-    leg_grid = Table.grid(padding=(0, 1))
-    leg_grid.add_column(justify="left")
-    leg_grid.add_row("[dim]• [/][bold green]REL%[/][dim]:  Reliability (0-100%). Perfect hw uptime since joining the current 72H cycle.[/]")
-    leg_grid.add_row("[dim]• [/][bold cyan]LUCK[/][dim]:  Hash Velocity. Live TH/s vs Hardware Specs. 100 = Expected pace.[/]")
-    leg_grid.add_row("[dim]• [/][bold bright_magenta]INF (LOG)[/][dim]:  Infection (0-100%). Logarithmic proximity of the RND BEST share to a Block Solve (100).[/]")
-    leg_grid.add_row("[dim]• [/][bold yellow]STAGE[/][dim]: IMMUNE ➔ SNIFFLE ➔ INFECTIOUS ➔ VIRULENT ➔ EPIDEMIC ➔ BCH / SATOSHI[/]")
-	
-    wrapper.add_row(Align.center(leg_grid))
-    wrapper.add_row("")
-
     window_sec = swarm_state.get("ladder_window_hours", 72) * 3600
     elapsed = time.time() - swarm_state.get("last_ladder_reset", time.time())
     rem_sec = max(0, window_sec - elapsed)
     h, m = int(rem_sec // 3600), int((rem_sec % 3600) // 60)
-    
-    wrapper.add_row(Align.center(f"⏳ [bold dim white]CYCLE ENDS IN:[/] [bold cyan]{h}h {m}m[/]"))
 
     # --- TOP PERFORMERS (Searches ALL active miners, not just the page!) ---
     hot_leader = None
@@ -952,16 +1199,14 @@ def luck_ladder_panel():
     if hot_leader and best_hot_pts > 0:
         l_tag, l_coin = hot_leader.get('tag', '---'), hot_leader.get('coin_type', 'BTC')
         c_style = "[bold cyan]BCH[/]" if l_coin == "BCH" else "[bold orange3]BTC[/]"
-        leader_banner = f"\n[bold bright_magenta]🔥 HOTTEST (VIRAL):[/] [{TYPE_COLORS.get(resolve_miner_type(hot_leader), 'white')} bold]{l_tag}[/] {c_style} [dim]({best_hot_pts:.1f} pts)[/]"
+        leader_banner = f"[bold bright_magenta]🔥 HOTTEST (VIRAL):[/] [{TYPE_COLORS.get(resolve_miner_type(hot_leader), 'white')} bold]{l_tag}[/] {c_style} [dim]({best_hot_pts:.1f} pts)[/]"
     else:
-        leader_banner = f"\n[bold dim white]🔥 HOTTEST (VIRAL):[/] [dim italic]Awaiting infection...[/]"
+        leader_banner = f"[bold dim white]🔥 HOTTEST (VIRAL):[/] [dim italic]Awaiting infection...[/]"
         
     if rel_leader and best_rel_pts > 0:
         r_tag, r_coin = rel_leader.get('tag', '---'), rel_leader.get('coin_type', 'BTC')
         rc_style = "[bold cyan]BCH[/]" if r_coin == "BCH" else "[bold orange3]BTC[/]"
         leader_banner += f"   [dim]||[/]   [bold green]💎 BEST (STEADY):[/] [{TYPE_COLORS.get(resolve_miner_type(rel_leader), 'white')} bold]{r_tag}[/] {rc_style} [dim]({best_rel_pts:.1f} pts)[/]"
-
-    wrapper.add_row(Align.center(leader_banner))
 
     # --- PREVIOUS WINNER ---
     archive = swarm_state.get("luck_archive", [])
@@ -972,8 +1217,35 @@ def luck_ladder_panel():
         prev_banner = f"[dim]⏮ PREVIOUS WINNER:[/] [{prev.get('color', 'white')}]{prev.get('tag', '???')}[/] [dim]({pts_str} pts on {prev.get('date', '')})[/]"
     else:
         prev_banner = f"[dim]⏮ PREVIOUS WINNER:[/] [dim italic]Awaiting first cycle...[/]"
-        
+
+    wrapper = Table.grid(expand=True)
+    wrapper.add_row(table)
+    wrapper.add_row("") 
+    
+    swarm_banner = (
+        f"[bold dim white]LIFETIME SWARM GROWTH HITS:[/] {agg_hits_str}   "
+        f"[dim white]||[/]   "
+        f"⏳ [bold dim white]CYCLE ENDS:[/] [bold cyan]{h}h {m}m[/]"
+    )
+    wrapper.add_row(Align.center(swarm_banner))
+    wrapper.add_row("") 
+    
+    wrapper.add_row(Align.center(leader_banner))
     wrapper.add_row(Align.center(prev_banner))
+    wrapper.add_row("") 
+    
+    wrapper.add_row(Align.center("[bold dim white]--- GAMIFICATION ENGINE ---[/]"))
+    
+    # --- LEGEND UPDATE ---
+    leg_grid = Table.grid(padding=(0, 1))
+    leg_grid.add_column(justify="left")
+    leg_grid.add_row("[dim]• [/][bold green]REL%[/][dim]:  Reliability (0-100%). Perfect hw uptime since joining the current 72H cycle.[/]")
+    leg_grid.add_row("[dim]• [/][bold cyan]LUCK[/][dim]:  Hash Velocity. Live TH/s vs Hardware Specs. 100 = Expected pace.[/]")
+    leg_grid.add_row("[dim]• [/][bold bright_magenta]INF (LOG)[/][dim]:  Infection (0-100%). Logarithmic proximity of the RND BEST share to a Block Solve (100).[/]")
+    leg_grid.add_row("[dim]• [/][bold yellow]STAGE[/][dim]: IMMUNE ➔ SNIFFLE ➔ INFECTIOUS ➔ VIRULENT ➔ EPIDEMIC ➔ BCH / SATOSHI[/]")
+	
+    wrapper.add_row(Align.center(leg_grid))
+    wrapper.add_row("")
 
     # --- NEW: Dynamic Title Bar ---
     total_main_miners = sum(1 for m in swarm_state["miners"].values() if not m.get('is_micro'))
@@ -990,10 +1262,10 @@ def luck_archive_panel():
         return Panel(Align.center("\n[dim italic]Compiling historical data...[/]\n"), title="[ LUCK ARCHIVE ]", border_style="magenta")
         
     table = Table(box=box.SIMPLE_HEAD, expand=True, show_header=False)
-    table.add_column("DATE", justify="left", width=4)
-    table.add_column("TAG", justify="center", width=4)
+    table.add_column("DATE", justify="left", width=5)
+    table.add_column("TAG", justify="center", width=6)
     table.add_column("COIN", justify="center", width=4)
-    table.add_column("POINTS", justify="right")
+    table.add_column("LUCK & POINTS", justify="right")
     
     # Display up to the last 6 entries to fit the panel size
     for entry in archive[:6]:
@@ -1006,11 +1278,21 @@ def luck_archive_panel():
         pts = entry.get("points", 0)
         pts_str = f"{pts:.1f}" if isinstance(pts, float) else str(pts)
         
+        diff_val = entry.get("best_diff", 0.0)
+        if diff_val == 0.0 and pts > 0:
+            diff_val = float(pts) * 1_000_000.0  # Dynamic backfill fallback for legacy entries
+            
+        if diff_val > 0:
+            diff_str = luck_engine.format_diff_scaled(diff_val)
+            display_pts = f"{diff_str} [dim]|[/] [bold green]{pts_str} pts[/]"
+        else:
+            display_pts = f"[bold green]{pts_str} pts[/]"
+            
         table.add_row(
             f"[dim]{date}[/]",
             f"[{color} bold]{tag}[/]",
             coin_styled,
-            f"[bold green]{pts_str} pts[/]"
+            display_pts
         )
         
     return Panel(table, title="[ LUCK ARCHIVE ]", border_style="magenta")
@@ -1167,8 +1449,8 @@ async def handle_commands(hunter, live_handle):
                     last_h_press = time.time()
                     swarm_state["trigger_hunt"] = True
                 
-            # --- NEW: Added 'n' to the input intercept list ---
-            elif cmd in ['s', 'c', 'd', 'a', 'n']:
+            # --- NEW: Added 'n' and 'p' to the input intercept list ---
+            elif cmd in ['s', 'c', 'd', 'a', 'n', 'p']:
                 swarm_state["is_inputting"] = True
                 
                 live_handle.stop()
@@ -1181,6 +1463,7 @@ async def handle_commands(hunter, live_handle):
                     elif cmd == 'd': await handle_miner_deletion()
                     elif cmd == 'a': await handle_miner_action()
                     elif cmd == 'n': await handle_manual_add(hunter) # <-- Maps the manual uplink
+                    elif cmd == 'p': await handle_power_settings_input() # <-- Maps the microgrid specs menu
                     save_state()
                 finally:
                     console.clear()
@@ -1188,34 +1471,21 @@ async def handle_commands(hunter, live_handle):
                 
                 swarm_state["is_inputting"] = False
                 
-            elif cmd == 'p':
-                swarm_state['solar_mode'] = not swarm_state.get('solar_mode', False)
-                save_state()
-                
             # --- NEW: IP Privacy Toggle ---
             elif cmd == 'i':
                 swarm_state['show_ips'] = not swarm_state.get('show_ips', False)
+                ip_str = "VISIBLE" if swarm_state['show_ips'] else "HIDDEN"
+                swarm_state["debug_log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] [bold cyan]IP PRIVACY:[/] Fleet IPs are now {ip_str}")
                 save_state()
+                try: live_handle.refresh()
+                except: pass
                 
             elif cmd == 'r': 
                 # --- VISUAL RECALIBRATION ONLY (Protecting the Data Model) ---
-                live_val = swarm_state.get('total_btc_th', 0.0) + swarm_state.get('total_bch_th', 0.0)
-                
-                # Clean the Trend Charts & Reset Peak Memory
-                if live_val > 1.0:
-                    # Filter out massive unrealistic spikes (e.g. > 150% of current live value)
-                    swarm_state["hashrate_history"] = [v for v in swarm_state.get("hashrate_history", []) if v < (live_val * 1.5)]
-                    swarm_state["power_history"] = [p for p in swarm_state.get("power_history", []) if p < (swarm_state.get('total_power', 0) * 1.5)]
-                    swarm_state["peak_th"] = live_val  
-                    swarm_state["debug_log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] [bold cyan]INFO:[/] Trend chart and Peak recalibrated.")
-                else:
-                    swarm_state["hashrate_history"] = []
-                    swarm_state["power_history"] = []
-                    swarm_state["peak_th"] = 0.0
-                
-                # We intentionally DO NOT wipe hits, shares, archives, or the epoch clock.
-                # Data excellence is permanently preserved.
-                save_state()
+                visual_recalibrate()
+                swarm_state["debug_log"].append(f"[{datetime.now().strftime('%H:%M:%S')}] [bold green]RECALIBRATE:[/] Trends & Peaks reset.")
+                try: live_handle.refresh()
+                except: pass
                 
             # ==========================================
             # --- NEW: PAGINATION CONTROLS ADDED HERE ---
@@ -1247,24 +1517,78 @@ def swarm_intel_panel():
     grid.add_column(ratio=1, no_wrap=True) 
     grid.add_column(ratio=1, no_wrap=True) 
     
+    other_th = swarm_state.get('total_other_th', 0.0)
+    
     grid.add_row("[bold cyan]HASHRATE[/]", "[bold magenta]LATENCY[/]", "[bold orange3]LOAD[/]")
     grid.add_row(
         f"BTC: {swarm_state.get('total_btc_th', 0):.2f} TH",
         f"Net:  {net_ping}ms",
         f"Draw: {swarm_state.get('total_amps', 0):.2f} A"
     )
-    grid.add_row(
-        f"BCH: {swarm_state.get('total_bch_th', 0):.2f} TH",
-        f"Pool: {pool_ping}ms",
-        f"Total: {int(swarm_state.get('total_power', 0))} W"
-    )
-    grid.add_row("", "", "")
+    if other_th > 0:
+        grid.add_row(
+            f"BCH: {swarm_state.get('total_bch_th', 0):.2f} TH",
+            f"Pool: {pool_ping}ms",
+            f"Total: {int(swarm_state.get('total_power', 0))} W"
+        )
+        grid.add_row(
+            f"OTH: {other_th:.2f} TH",
+            "",
+            ""
+        )
+    else:
+        grid.add_row(
+            f"BCH: {swarm_state.get('total_bch_th', 0):.2f} TH",
+            f"Pool: {pool_ping}ms",
+            f"Total: {int(swarm_state.get('total_power', 0))} W"
+        )
+        grid.add_row("", "", "")
+        
     grid.add_row("[bold green]OPEX[/]", "[bold dim white]SWARM PK[/]", "")
     grid.add_row(
         f"Daily: £{swarm_state.get('total_opex_daily', 0):.2f}",
         f"{swarm_state.get('peak_th', 0):.2f} TH/s",
         ""
     )
+
+    # --- Section: Fleet Status & Ambient Sensors ---
+    online_count = sum(1 for m in swarm_state.get("miners", {}).values() if m.get('online'))
+    total_count = len([m for m in swarm_state.get("miners", {}).values() if not m.get('is_micro')])
+    
+    ambient_val = swarm_state.get('ambient_temp', 0.0)
+    ambient_str = f"{ambient_val:.1f}°C" if ambient_val != 0.0 else "Scanning..."
+    
+    sensors_grid = Table.grid(expand=True, padding=(0, 2, 0, 0))
+    sensors_grid.add_column(ratio=1, no_wrap=True)
+    sensors_grid.add_column(ratio=1, no_wrap=True)
+    
+    sensors_grid.add_row("[bold cyan]FLEET STATUS[/]", "[bold cyan]ENVIRONMENT[/]")
+    sensors_grid.add_row(f"Miners: {online_count} / {total_count} Online", f"Ambient Temp: {ambient_str}")
+
+    # --- Section: Swarm Lifetime Shares ---
+    agg_acc = swarm_state.get('total_shares_acc', 0)
+    agg_rej = swarm_state.get('total_shares_rej', 0)
+    tot_shares = agg_acc + agg_rej
+    rej_ratio = (agg_rej / tot_shares * 100) if tot_shares > 0 else 0.0
+    rej_color = "bold red" if agg_rej > 0 else "dim white"
+    
+    shares_grid = Table.grid(expand=True, padding=(0, 2, 0, 0))
+    shares_grid.add_column(ratio=1, no_wrap=True)
+    shares_grid.add_column(ratio=1, no_wrap=True)
+    
+    shares_grid.add_row("[bold yellow]SWARM LIFETIME SHARES[/]", "")
+    shares_grid.add_row(
+        f"Accepted: [bold white]{agg_acc:,}[/]",
+        f"Rejected: [{rej_color}]{agg_rej:,}[/] [dim]({rej_ratio:.2f}%)[/]"
+    )
+
+    # Assemble into master vertical grid
+    wrapper = Table.grid(expand=True)
+    wrapper.add_row(grid)
+    wrapper.add_row("[dim]─────────────────────────────────────────────────[/]")
+    wrapper.add_row(sensors_grid)
+    wrapper.add_row("[dim]─────────────────────────────────────────────────[/]")
+    wrapper.add_row(shares_grid)
 
     # --- CONCEPT 3: ANOMALY DETECTION ENGINE ---
     anomalies = []
@@ -1277,8 +1601,7 @@ def swarm_intel_panel():
             if float(m.get('jth', 0)) > 28:
                 anomalies.append(f"EFFICIENCY ALERT: {m.get('tag')} ({m.get('jth'):.1f} J/TH)")
 
-    # THE FIX: Network latency alerts have been completely removed!
-
+    # Latency warning removed per standard profile rules
     if anomalies:
         alert_text = "   ///   ".join(anomalies) + "   ///   "
         payload = f"[bold blink red]⚠ CRITICAL SYSTEM WARNING ⚠[/]   [bold white]{alert_text}[/]"
@@ -1293,16 +1616,15 @@ def swarm_intel_panel():
        
         scrolling_text = Text.from_markup(infinite_payload)[anomaly_offset : anomaly_offset + 120]
         
-        wrapper = Table.grid(expand=True)
-        wrapper.add_row(grid)
-        wrapper.add_row("\n")
+        final_layout = Table.grid(expand=True)
+        final_layout.add_row(wrapper)
+        final_layout.add_row("\n")
+        final_layout.add_row(Panel(Align.left(scrolling_text), style="on dark_red", box=box.SIMPLE))
         
-        wrapper.add_row(Panel(Align.left(scrolling_text), style="on dark_red", box=box.SIMPLE))
-        
-        return Panel(wrapper, title="[ SYSTEM MONITOR ]", border_style="bold red")
+        return Panel(final_layout, title="[ SYSTEM MONITOR ]", border_style="bold red")
     else:
         # Normal, quiet operation
-        return Panel(grid, title="[ SYSTEM MONITOR ]", border_style="magenta")
+        return Panel(wrapper, title="[ SYSTEM MONITOR ]", border_style="magenta")
 
 def efficiency_leaderboard_panel():
     table = Table(box=box.SIMPLE_HEAD, expand=True, show_header=True, header_style="bold green")
@@ -1346,6 +1668,8 @@ def efficiency_leaderboard_panel():
             scored_fleet.append({
                 "tag": m.get('tag', '---'), 
                 "score": int(final_score),
+                "temp_raw": temp,
+                "fan_raw": fan,
                 "temp": f"{temp:.0f}°C",
                 "fan": f"{fan}",
                 "elec": f"{jth:.1f}",
@@ -1384,21 +1708,75 @@ def efficiency_leaderboard_panel():
         table.add_section()
         table.add_row("[bold white]AVG[/]", "", "", "", f"[{'green' if avg < 20 else 'yellow'}]{avg:.1f}[/]", status)
 
-    btc_diff_str = luck_engine.format_diff_scaled(luck_engine.net_diff) if luck_engine.net_diff > 0 else "[dim]Syncing...[/]"
-    bch_diff_str = luck_engine.format_diff_scaled(luck_engine.bch_diff) if luck_engine.bch_diff > 0 else "[dim]Syncing...[/]"
+    # ==========================================================
+    # --- DYNAMIC SWARM THERMAL INTEGRITY & PASTE QUALITY TABLE ---
+    # ==========================================================
+    thermal_table = Table(box=box.SIMPLE_HEAD, expand=True, show_header=True, header_style="bold cyan")
+    thermal_table.add_column("TAG", width=5, justify="center", no_wrap=True)
+    thermal_table.add_column("PASTE LIFE", justify="center", width=14, no_wrap=True)
+    thermal_table.add_column("THERMAL STATUS / REPASTE ACTION", justify="left", ratio=1, no_wrap=True)
+
+    for m in page_fleet:
+        temp = float(m['temp_raw'])
+        fan = float(m['fan_raw'])
+        
+        # Calibrated thermal paste wear algorithm based on geolocated ambient temp and sustained thermals
+        ambient = swarm_state.get('ambient_temp', 22.0)
+        if ambient <= 0: ambient = 22.0
+        delta_t = max(5.0, temp - ambient)
+        
+        if temp <= 62.0:
+            # Safe temperatures mean thermal paste is fully functional (high 90%+ health)
+            paste_health = 98.0 - (temp - 40.0) * 0.2 - (fan / 2500.0)
+        else:
+            # Genuine degradation registers only under high sustained heat + struggling fan speeds
+            degrade = max(0.0, (temp - 60.0) * 2.0 + (fan / 150.0) - 15.0)
+            paste_health = max(15.0, 95.0 - degrade)
+            
+        paste_health = min(100.0, max(5.0, paste_health))
+        
+        # Color mapping based on health
+        if paste_health > 75:
+            health_color = "green"
+            status_text = "[bold green]OPTIMAL[/] (Efficient coupling)"
+        elif paste_health > 45:
+            health_color = "yellow"
+            status_text = "[bold yellow]DEGRADED[/] (Repaste in 30 Days)"
+        else:
+            health_color = "red"
+            status_text = "[bold red]CRITICAL[/] (Dry paste. Schedule swap!)"
+            
+        health_bar_len = 8
+        filled_health = int((paste_health / 100) * health_bar_len)
+        health_bar = f"[bold {health_color}]{'█' * filled_health}[/][dim white]{'░' * (health_bar_len - filled_health)}[/]"
+        
+        thermal_table.add_row(
+            f"[{m['color']}]{m['tag']}[/]",
+            f"[bold {health_color}]{paste_health:.0f}%[/] [{health_bar}]",
+            status_text
+        )
+
+    # --- SIDE-BY-SIDE GRID SPLIT (Saves 50% vertical space!) ---
+    side_by_side = Table.grid(expand=True)
+    side_by_side.add_column(ratio=6)
+    side_by_side.add_column(width=2) # Divider space
+    side_by_side.add_column(ratio=4)
+    side_by_side.add_row(table, "", thermal_table)
 
     wrapper = Table.grid(expand=True)
-    wrapper.add_row(table)
-    wrapper.add_row("") 
-    
-    target_display = (
-        f"[bold dim white]GLOBAL NETWORK TARGETS[/]\n"
-        f"[bold orange3]BTC:[/] {btc_diff_str}   [dim]||[/]   [bold cyan]BCH:[/] {bch_diff_str}"
+    wrapper.add_row(side_by_side)
+    wrapper.add_row("")
+
+    # --- THERMAL EXPLANATION LEGEND ---
+    therm_grid = Table.grid(padding=(0, 1))
+    therm_grid.add_column(justify="left")
+    therm_grid.add_row(
+        "[dim]• [/][bold cyan]PASTE LIFE[/][dim]:  Thermal conduction quality, modeled using core temperature rise above geolocated ambient relative to fan speed workload. Prevents false criticalities on low-temp rigs.[/]"
     )
-    wrapper.add_row(Align.center(target_display))
+    wrapper.add_row(Align.center(therm_grid))
 
     # ==========================================================
-    # --- INTEGRATED SWARM TUNING ADVISORY ---
+    # --- INTEGRATED SWARM TUNING & HARDWARE ADVISORY ---
     # ==========================================================
     advice = []
     low_score_found = False
@@ -1407,8 +1785,19 @@ def efficiency_leaderboard_panel():
 
     for m in active_miners:
         temp = float(m.get('temp', 0))
+        fan = float(m.get('fanrpm', m.get('fanspeed', m.get('fan', 0))))
         jth = float(m.get('jth', 0))
         tag = m.get('tag', '---')
+        
+        # Calculate paste health for warnings using calibrated algorithm
+        ambient = swarm_state.get('ambient_temp', 22.0)
+        if ambient <= 0: ambient = 22.0
+        if temp <= 62.0:
+            paste_health = 98.0 - (temp - 40.0) * 0.2 - (fan / 2500.0)
+        else:
+            degrade = max(0.0, (temp - 60.0) * 2.0 + (fan / 150.0) - 15.0)
+            paste_health = max(15.0, 95.0 - degrade)
+        paste_health = min(100.0, max(5.0, paste_health))
         
         if 0 < jth < best_efficiency:
             best_efficiency = jth
@@ -1416,6 +1805,10 @@ def efficiency_leaderboard_panel():
 
         if temp > 72:
             advice.append(f"[bold red]⚠ {tag}:[/] High Thermals ({temp:.0f}°C). Check fan/airflow.")
+            low_score_found = True
+        
+        if temp > 65.0 and paste_health < 45:
+            advice.append(f"[bold red]🔧 {tag} REPASTE ADVISORY:[/] Dry compound detected ({paste_health:.0f}% health). Plan thermal paste service.")
             low_score_found = True
         
         if jth > 22.0:
@@ -1431,7 +1824,7 @@ def efficiency_leaderboard_panel():
         advice.append("[dim]Waiting for ASIC telemetry...[/]")
 
     wrapper.add_row("")
-    wrapper.add_row(Align.center("[bold dim white]- SWARM TUNING ADVISORY -[/]"))
+    wrapper.add_row(Align.center("[bold dim white]- SWARM TUNING & HARDWARE ADVISORY -[/]"))
     wrapper.add_row(Align.center("\n".join(advice)))
 
     # --- NEW: Dynamic Title Bar ---
@@ -1537,7 +1930,11 @@ def generate_carousel() -> Panel:
         # Standard, quiet operation telemetry
         page_3 = f"[bold white]PEAK SWARM HASH:[/] [bold green]{peak:.2f} TH/s[/]   ///   [bold white]LATENCY:[/] Net {net_ping}ms | Pool {pool_ping}ms"
     
-    pages = [page_1, page_2, page_3]
+    btc_diff_str = luck_engine.format_diff_scaled(luck_engine.net_diff) if luck_engine.net_diff > 0 else "Syncing..."
+    bch_diff_str = luck_engine.format_diff_scaled(luck_engine.bch_diff) if luck_engine.bch_diff > 0 else "Syncing..."
+    page_4 = f"[bold white]GLOBAL NETWORK TARGETS:[/] [bold orange3]BTC {btc_diff_str}[/]   [dim]||[/]   [bold cyan]BCH {bch_diff_str}[/]"
+    
+    pages = [page_1, page_2, page_3, page_4]
     
     # 4. Calculate which page to show based on the system clock (changes every 5 seconds)
     current_time = int(time.time())
