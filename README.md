@@ -15,11 +15,12 @@ If you find it useful, feel free to buy me a coffee: bc1qnpn7svcrra6x6dvfcnxuzg3
 ### 🖥️ Core Console (Python Terminal)
 * **Auto-Discovery Engine:** Automatically scans local subnets to find, classify, and connect new ASIC hardware without manual IP entry.
 * **The "Luck Virus" Gamification:** A dynamic 72-hour mathematical ladder that tracks hardware "infection" (luck) across the global network, assigning mutation stages based on statistical rarity.
-* **Off-Grid Solar Calculator:** Real-time metrics calculating exact solar array and battery requirements based on live Swarm power draw.
-* **Companion API:** A headless FastAPI server that broadcasts state arrays and telemetry to the BLSIC network.
+* **Off-Grid Solar Calculator:** Real-time metrics calculating exact solar array and battery requirements based on live Swarm power draw. Features **automated Day/Night astronomical timecycles** (sunny peak generation vs dark turbine wind cycles) driven by system clock timezone geolocation.
+* **🧬 Swarm Thermal Conduction Audit:** Renders a gorgeous, space-saving side-by-side diagnostic table auditing **Thermal Paste Degradation & Coupling Health %** per miner—calibrated dynamically via core temperature delta over live geolocated ambient temperature relative to fan speed workload.
+* **Companion API Bridge:** A headless FastAPI server that broadcasts state arrays, live gamification rankings, countdown timers, ambient weather data, and thermal paste diagnostics to your companion apps.
 
 ### 📱 Android Companion App (Extended Functionality) (COMING SOON)
-* **Silicon Maintenance Bay:** *Exclusive to the mobile app.* Features live thermal delta-T tracking against local ambient weather data, warning you of MOSFET/Core degradation before physical hardware failure occurs.
+* **Silicon Maintenance Bay:** Features live thermal delta-T tracking against local ambient weather data, warning you of MOSFET/Core degradation before physical hardware failure occurs. Synergizes with the terminal's built-in paste wear audit database.
 * **Tactical Remote Overrides:** Manage your fleet on the go with direct HTTP reboot signals sent through the API bridge.
 
 INSTALL HELP:
@@ -136,7 +137,7 @@ Once tagged you get the extra information added to the table:
 <img width="1300" height="348" alt="image" src="https://github.com/user-attachments/assets/22e15e64-94af-48e0-aa38-611b61848622" />
 
 
-* **`P` (Power Mode):** Toggles the dashboard into Solar/Off-Grid mode.
+* **`P` (Microgrid Specifications Override):** Suspends the live dashboard display and opens the interactive configuration setup console menu to dynamically customize solar array wattages, panel counts, battery capacities, hybrid inverter limits, wind turbine ratings, and toggle Sunsynk live mode—saving changes directly to `swarm_config.json`.
 * **`A` (Action Terminal):** Opens the remote command center to send targeted HTTP reboot signals to specific rigs.
 * **`R` (Reset Views):** Visually recalibrates the trend charts and clears the session peak hashrate. *(Note: This does not delete lifetime data or luck metrics).*
 * **`D` (Delete):** Prunes a disconnected or retired miner from your local database.
